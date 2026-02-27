@@ -143,6 +143,9 @@ echo
 if [[ -f "$SCRIPT_DIR/python_embeded/bin/python3.11" ]]; then
     echo "[Environment] Found embedded Python, verifying..."
 
+    # Ensure executable permissions on binaries (may be lost after extraction)
+    chmod +x "$SCRIPT_DIR/python_embeded/bin/"* 2>/dev/null || true
+
     # Remove macOS quarantine/provenance attributes and re-sign binaries (Gatekeeper fix)
     if ! "$SCRIPT_DIR/python_embeded/bin/python3.11" -c "pass" 2>/dev/null; then
         echo "[Setup] Fixing macOS Gatekeeper restrictions..."
@@ -157,6 +160,24 @@ if [[ -f "$SCRIPT_DIR/python_embeded/bin/python3.11" ]]; then
         echo "[Environment] Using embedded Python."
         PYTHON_EXE="$SCRIPT_DIR/python_embeded/bin/python3.11"
         SCRIPT_PATH="$SCRIPT_DIR/acestep/api_server.py"
+
+        # On Apple Silicon, verify MLX packages work with this macOS version.
+        # python_embeded may ship wheels built for a different macOS; pip
+        # reinstall fetches the correct platform wheel automatically.
+        if [[ "$ARCH" == "arm64" ]]; then
+            _need_mlx_fix=0
+            if ! "$PYTHON_EXE" -c "import mlx.core" 2>/dev/null; then
+                echo "[Setup] MLX incompatible with this macOS — will reinstall."
+                _need_mlx_fix=1
+            elif ! "$PYTHON_EXE" -c "from mlx_lm.utils import load" 2>/dev/null; then
+                echo "[Setup] mlx-lm outdated — will upgrade."
+                _need_mlx_fix=1
+            fi
+            if [[ $_need_mlx_fix -eq 1 ]]; then
+                echo "[Setup] Fixing MLX packages (this only runs once)..."
+                "$PYTHON_EXE" -m pip install --upgrade mlx mlx-lm 2>&1 | tail -1
+            fi
+        fi
 
         echo "Starting ACE-Step API Server..."
         echo
