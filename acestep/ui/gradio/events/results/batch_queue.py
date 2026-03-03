@@ -6,6 +6,7 @@ parameters for navigation, replay, and AutoGen workflows.
 import datetime
 
 import gradio as gr
+import torch
 
 from acestep.ui.gradio.i18n import t
 
@@ -45,6 +46,14 @@ def store_batch_in_queue(
     Returns:
         The updated *batch_queue*.
     """
+    prev_index = batch_index - 1
+    if prev_index in batch_queue:
+        old_extra = batch_queue[prev_index].get("extra_outputs", {})
+        for k in list(old_extra.keys()):
+            if isinstance(old_extra[k], torch.Tensor):
+                del old_extra[k]
+        batch_queue[prev_index]["extra_outputs"] = {}
+
     batch_queue[batch_index] = {
         "status": status,
         "audio_paths": audio_paths,

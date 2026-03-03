@@ -104,6 +104,84 @@ class StoreBatchInQueueTests(unittest.TestCase):
         )
         self.assertEqual(result[0]["scores"], [""] * 8)
 
+    def test_store_frees_previous_extra_outputs_tensors(self):
+        """Storing a new batch should free tensor extra_outputs from the previous batch."""
+        import torch
+        tensor = torch.zeros(2, 4)
+        queue = {
+            0: {
+                "audio_paths": ["/tmp/old.mp3"],
+                "generation_info": "old info",
+                "seeds": "1",
+                "status": "completed",
+                "extra_outputs": {"pred_latents": tensor},
+            }
+        }
+        result = store_batch_in_queue(
+            batch_queue=queue,
+            batch_index=1,
+            audio_paths=["/tmp/new.mp3"],
+            generation_info="new info",
+            seeds="99",
+        )
+        self.assertEqual(result[0]["extra_outputs"], {})
+        self.assertIn(1, result)
+
+    def test_store_frees_only_previous_batch_extra_outputs(self):
+        """Only the immediately preceding batch's extra_outputs should be cleared."""
+        import torch
+        tensor_a = torch.ones(1)
+        tensor_b = torch.ones(2)
+        queue = {
+            0: {"audio_paths": [], "extra_outputs": {"pred_latents": tensor_a}, "status": "completed"},
+            1: {"audio_paths": [], "extra_outputs": {"pred_latents": tensor_b}, "status": "completed"},
+        }
+        store_batch_in_queue(
+            batch_queue=queue,
+            batch_index=2,
+            audio_paths=["/tmp/c.mp3"],
+            generation_info="info",
+            seeds="7",
+        )
+        # Batch 1 (prev_index=1) should have its extra_outputs cleared
+        self.assertEqual(queue[1]["extra_outputs"], {})
+        # Batch 0 should be untouched
+        self.assertIn("pred_latents", queue[0]["extra_outputs"])
+
+    def test_store_first_batch_no_prev_cleanup(self):
+        """Storing the first batch (index 0) should not fail when there is no previous batch."""
+        queue = {}
+        result = store_batch_in_queue(
+            batch_queue=queue,
+            batch_index=0,
+            audio_paths=["/tmp/a.mp3"],
+            generation_info="info",
+            seeds="42",
+        )
+        self.assertIn(0, result)
+
+    def test_store_clears_non_tensor_extra_outputs(self):
+        """Storing a new batch should clear all extra_outputs from the previous batch, including non-tensor values."""
+        queue = {
+            0: {
+                "audio_paths": [],
+                "extra_outputs": {
+                    "lrcs": ["[00:00.00] hello"],
+                    "subtitles": [None],
+                },
+                "status": "completed",
+            }
+        }
+        store_batch_in_queue(
+            batch_queue=queue,
+            batch_index=1,
+            audio_paths=["/tmp/b.mp3"],
+            generation_info="info",
+            seeds="5",
+        )
+        # extra_outputs cleared entirely (the dict is replaced with {})
+        self.assertEqual(queue[0]["extra_outputs"], {})
+
 
 if __name__ == "__main__":
     unittest.main()
