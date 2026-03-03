@@ -19,7 +19,6 @@ def _make_fabric_wrapper(inner: MagicMock) -> MagicMock:
 def _make_peft_decoder() -> MagicMock:
     """Return a mock that looks like a PEFT PeftModel-wrapped decoder."""
     decoder = MagicMock(spec=["save_pretrained"])
-    decoder.save_pretrained = MagicMock()
     return decoder
 
 
