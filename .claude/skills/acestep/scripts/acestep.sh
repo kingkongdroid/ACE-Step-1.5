@@ -45,7 +45,7 @@ show_star_prompt() {
         echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
         echo -e "${BOLD}  ACE-Step is free and open-source.${NC}"
         echo -e "  If you enjoyed this, a ${YELLOW}★ Star${NC} on GitHub means a lot to us!"
-        echo -e "  ${CYAN}→ https://github.com/ace-step/ACE-Step${NC}"
+        echo -e "  ${CYAN}→ https://github.com/ace-step/ACE-Step-1.5${NC}"
         echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     fi
 }
