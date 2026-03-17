@@ -5,6 +5,16 @@ from typing import Optional
 import torch
 from loguru import logger
 
+from acestep.gpu_config import get_effective_free_vram_gb
+
+
+# Minimum free VRAM (GB) required to safely run GPU tiled decode when
+# chunk_size has already been reduced to the smallest supported value.
+# Below this threshold the VAE is moved to CPU for the decode pass so that
+# the GPU decode does not deadlock on tight-memory systems (notably Windows
+# WDDM where CUDA memory exhaustion can block instead of raising OOM).
+_TILED_DECODE_MIN_FREE_VRAM_GB = 1.5
+
 
 class VaeDecodeMixin:
     """High-level VAE decode entrypoints and fallback policies."""
@@ -73,8 +83,45 @@ class VaeDecodeMixin:
                 chunk_size = min(chunk_size, _mps_chunk)
                 overlap = min(overlap, _mps_overlap)
 
+        # When chunk_size is at its minimum value (VAE_DECODE_MAX_CHUNK_SIZE // 4,
+        # set by MemoryUtilsMixin._get_auto_decode_chunk_size when free VRAM < 12 GB)
+        # and available VRAM is critically low, proactively move the VAE to CPU to
+        # prevent a CUDA deadlock/hang that can occur on Windows (WDDM) and other
+        # tight-memory scenarios where CUDA stalls instead of raising
+        # torch.cuda.OutOfMemoryError.
+        # VAE_DECODE_MAX_CHUNK_SIZE is defined in MemoryUtilsMixin (memory_utils.py).
+        _forced_cpu = False
+        _forced_cpu_original_device = None
+        _forced_cpu_original_dtype = None
+        if chunk_size <= self.VAE_DECODE_MAX_CHUNK_SIZE // 4 and not _is_mps:
+            try:
+                from acestep.core.generation.handler.memory_utils import (
+                    _cuda_device_index,
+                    _is_cuda_device,
+                )
+                if _is_cuda_device(self.device):
+                    free_gb = get_effective_free_vram_gb(_cuda_device_index(self.device))
+                    if free_gb < _TILED_DECODE_MIN_FREE_VRAM_GB:
+                        logger.warning(
+                            f"[tiled_decode] VRAM critically low ({free_gb:.2f} GB) with "
+                            f"min chunk_size={chunk_size}; moving VAE to CPU to prevent GPU hang"
+                        )
+                        _forced_cpu_original_device = next(self.vae.parameters()).device
+                        _forced_cpu_original_dtype = self._get_vae_dtype(
+                            str(_forced_cpu_original_device)
+                        )
+                        self._recursive_to_device(self.vae, "cpu", self._get_vae_dtype("cpu"))
+                        latents = latents.cpu()
+                        self._empty_cache()
+                        _forced_cpu = True
+                        # Waveform buffers will also land on CPU; explicit offload is
+                        # unnecessary when the whole decode is on CPU already.
+                        offload_wav_to_cpu = False
+            except Exception:
+                pass  # VRAM check is best-effort; proceed with GPU decode on failure
+
         try:
-            return self._tiled_decode_inner(latents, chunk_size, overlap, offload_wav_to_cpu)
+            result = self._tiled_decode_inner(latents, chunk_size, overlap, offload_wav_to_cpu)
         except (NotImplementedError, RuntimeError) as exc:
             if not _is_mps:
                 raise
@@ -82,7 +129,16 @@ class VaeDecodeMixin:
                 f"[tiled_decode] MPS decode failed ({type(exc).__name__}: {exc}), "
                 f"falling back to CPU VAE decode..."
             )
-            return self._tiled_decode_cpu_fallback(latents)
+            result = self._tiled_decode_cpu_fallback(latents)
+        finally:
+            if _forced_cpu and _forced_cpu_original_device is not None:
+                logger.info("[tiled_decode] Restoring VAE to GPU after CPU tiled decode")
+                self._recursive_to_device(
+                    self.vae, _forced_cpu_original_device, _forced_cpu_original_dtype
+                )
+                self._empty_cache()
+
+        return result
 
     def _tiled_decode_cpu_fallback(self, latents):
         """Last-resort CPU VAE decode when MPS fails unexpectedly."""

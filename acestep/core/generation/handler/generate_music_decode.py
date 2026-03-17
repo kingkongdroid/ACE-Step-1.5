@@ -147,7 +147,7 @@ class GenerateMusicDecodeMixin:
                                 "[generate_music] Effective free VRAM before VAE decode: "
                                 f"{effective_free:.2f} GB"
                             )
-                            if effective_free < 0.5:
+                            if effective_free < 2.0:
                                 logger.warning(
                                     "[generate_music] Only "
                                     f"{effective_free:.2f} GB free VRAM; auto-enabling CPU VAE decode"

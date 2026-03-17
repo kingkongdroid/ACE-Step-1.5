@@ -51,7 +51,7 @@ class ConditioningTargetMixin:
                     current_wav = target_wavs_list[i].to(self.device).unsqueeze(0)
                     if self.is_silence(current_wav):
                         expected_latent_length = current_wav.shape[-1] // 1920
-                        target_latent = self.silence_latent[0, :expected_latent_length, :]
+                        target_latent = self.silence_latent[0, :expected_latent_length, :].clone()
                     else:
                         if (
                             _cached_wav_ref is not None
@@ -82,7 +82,7 @@ class ConditioningTargetMixin:
 
             max_latent_length = max(latent.shape[0] for latent in target_latents_list)
             max_latent_length = max(128, max_latent_length)
-            silence_latent_tiled = self.silence_latent[0, :max_latent_length, :]
+            silence_latent_tiled = self.silence_latent[0, :max_latent_length, :].clone()
 
             padded_latents = []
             for latent in target_latents_list:

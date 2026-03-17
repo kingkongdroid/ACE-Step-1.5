@@ -1668,7 +1668,6 @@ class AceStepConditionGenerationModel(AceStepPreTrainedModel):
         # tokenize and detokenize to get LM hints for cover songs (when is_covers=True)
         # Use precomputed hints if provided (e.g., from audio codes), otherwise tokenize hidden_states
         if precomputed_lm_hints_25Hz is not None:
-            print("Using precomputed LM hints")
             lm_hints_25Hz = precomputed_lm_hints_25Hz[:, :src_latents.shape[1], :]
         else:
             if audio_codes is not None:
