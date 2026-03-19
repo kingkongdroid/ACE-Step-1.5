@@ -37,7 +37,7 @@ def _warn_if_prerelease_python():
     if getattr(v, "releaselevel", "final") != "final" and sys.platform.startswith("linux"):
         warnings.warn(
             f"Detected pre-release Python {sys.version.split()[0]} ({getattr(v, 'releaselevel', '')}). "
-            "This is known to cause segmentation faults with the vLLM engine on Linux. "
+            "This is known to cause segmentation faults with vLLM/nano-vllm on Linux. "
             "Please install a stable Python release (e.g. 3.11.12+), or use --backend pt as a workaround.",
             RuntimeWarning,
             stacklevel=2,
@@ -591,7 +591,7 @@ class LLMHandler:
             # Disable CUDA/HIP graph capture on ROCm (unverified on RDNA3 Windows),
             # on Jetson (SDPA paged-cache decode calls .item() during capture),
             # and when flash_attn is not installed (same .item() incompatibility on all CUDA hardware).
-            # When flash_attn is unavailable, customized_vllm falls back to _sdpa_cached_decode
+            # When flash_attn is unavailable, nano-vllm falls back to _sdpa_decode_with_paged_cache
             # which contains a Python loop with .item() calls.  These force CPU-GPU
             # synchronisation that is forbidden inside torch.cuda.CUDAGraph capture,
             # corrupting the CUDA context and causing downstream errors such as:
@@ -603,7 +603,7 @@ class LLMHandler:
                     dev_name = torch.cuda.get_device_name(0).lower()
                     is_jetson = any(k in dev_name for k in ("orin", "xavier", "tegra"))
                     if is_jetson:
-                        logger.info(f"Jetson GPU detected ({dev_name}): disabling CUDA graph capture for customized_vllm")
+                        logger.info(f"Jetson GPU detected ({dev_name}): disabling CUDA graph capture for nano-vllm")
                 except Exception:
                     pass
             _has_flash_attn = False
@@ -614,7 +614,7 @@ class LLMHandler:
                 pass
             if not _has_flash_attn:
                 logger.info(
-                    "flash_attn not installed: disabling CUDA graph capture for customized_vllm "
+                    "flash_attn not installed: disabling CUDA graph capture for nano-vllm "
                     "(SDPA fallback uses .item() calls in paged-cache decode that are "
                     "incompatible with CUDA graph capture)"
                 )
@@ -626,7 +626,7 @@ class LLMHandler:
                 pass
             if not _has_triton:
                 logger.info(
-                    "Triton not available: disabling CUDA graph capture for customized_vllm "
+                    "Triton not available: disabling CUDA graph capture for nano-vllm "
                     "(CUDA graphs require torch.compile which depends on Triton)"
                 )
             enforce_eager_for_vllm = bool(is_rocm or is_jetson or not _has_flash_attn or not _has_triton)
@@ -751,11 +751,11 @@ class LLMHandler:
             logger.error("CUDA/ROCm is not available. Please check your GPU setup.")
             return "❌ CUDA/ROCm is not available. Please check your GPU setup."
         try:
-            from acestep.customized_vllm import LLM, SamplingParams
-        except ImportError as exc:
+            from nanovllm import LLM, SamplingParams
+        except ImportError:
             self.llm_initialized = False
-            logger.error(f"Failed to import customized_vllm engine: {exc}")
-            return f"❌ Failed to import customized_vllm engine: {exc}"
+            logger.error("nano-vllm is not installed. Please install it using 'cd acestep/third_parts/nano-vllm && pip install .'")
+            return "❌ nano-vllm is not installed. Please install it using 'cd acestep/third_parts/nano-vllm && pip install .'"
 
         try:
             current_device = torch.cuda.current_device()
@@ -857,7 +857,7 @@ class LLMHandler:
         Accepts either a single formatted prompt (str) or a list of formatted prompts (List[str]).
         Returns a single string for single mode, or a list of strings for batch mode.
         """
-        from acestep.customized_vllm import SamplingParams
+        from nanovllm import SamplingParams
 
         # Determine if batch mode
         formatted_prompt_list, is_batch = self._normalize_batch_input(formatted_prompts)
@@ -1490,11 +1490,8 @@ class LLMHandler:
                         seeds=seeds,
                     )
             except Exception as e:
-                error_detail = traceback.format_exc()
-                logger.error(
-                    f"Error in batch codes generation: {type(e).__name__}: {e}\n{error_detail}"
-                )
-                error_msg = f"Error in batch codes generation: {type(e).__name__}: {e}"
+                error_msg = f"Error in batch codes generation: {str(e)}"
+                logger.error(error_msg)
                 return {
                     "metadata": [],
                     "audio_codes": [],
@@ -2417,11 +2414,11 @@ class LLMHandler:
             import traceback
             error_detail = traceback.format_exc()
             logger.error(f"Error in generate_from_formatted_prompt: {type(e).__name__}: {e}\n{error_detail}")
-            # Reset vllm engine state on error to prevent stale context from causing
+            # Reset nano-vllm state on error to prevent stale context from causing
             # subsequent CUDA illegal memory access errors
             if self.llm_backend == "vllm":
                 try:
-                    from acestep.customized_vllm import reset_context
+                    from nanovllm.utils.context import reset_context
                     reset_context()
                 except ImportError:
                     pass
@@ -4016,7 +4013,7 @@ class LLMHandler:
             yield
             return
 
-        # If using vllm engine or MLX, do not offload (managed differently)
+        # If using nanovllm or MLX, do not offload (managed differently)
         if self.llm_backend in ("vllm", "mlx"):
             yield
             return
