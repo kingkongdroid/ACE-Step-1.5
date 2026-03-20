@@ -53,13 +53,14 @@ bool PluginPreview::loadFile(const juce::File& file, juce::String& errorMessage)
         return false;
     }
 
+    const auto readerSampleRate = reader->sampleRate;
     auto nextReaderSource = std::make_unique<juce::AudioFormatReaderSource>(reader.release(), true);
 
     const juce::ScopedLock lock(lock_);
     transportSource_.stop();
     transportSource_.setSource(nullptr);
     readerSource_.reset();
-    transportSource_.setSource(nextReaderSource.get(), 0, nullptr, sampleRate_);
+    transportSource_.setSource(nextReaderSource.get(), 0, nullptr, readerSampleRate);
     readerSource_ = std::move(nextReaderSource);
     currentFile_ = file;
     return true;
