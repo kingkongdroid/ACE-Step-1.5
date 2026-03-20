@@ -36,6 +36,15 @@ struct PluginGenerationPollResult final
     std::array<PluginBackendResultSlot, static_cast<size_t>(kResultSlotCount)> resultSlots;
 };
 
+struct PluginPreviewDownloadResult final
+{
+    int slotIndex = -1;
+    bool succeeded = false;
+    juce::String localFilePath;
+    juce::String displayName;
+    juce::String errorMessage;
+};
+
 class PluginBackendClient final
 {
 public:
@@ -43,5 +52,8 @@ public:
     [[nodiscard]] PluginGenerationStartResult startGeneration(const PluginState& state) const;
     [[nodiscard]] PluginGenerationPollResult pollGeneration(const juce::String& baseUrl,
                                                             const juce::String& taskId) const;
+    [[nodiscard]] PluginPreviewDownloadResult downloadPreviewFile(const juce::String& baseUrl,
+                                                                  const juce::String& remoteFileUrl,
+                                                                  int slotIndex) const;
 };
 }  // namespace acestep::vst3

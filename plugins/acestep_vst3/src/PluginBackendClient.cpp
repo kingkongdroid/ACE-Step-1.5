@@ -156,6 +156,24 @@ int chooseInferenceSteps(QualityMode qualityMode)
 
     return 8;
 }
+
+juce::String chooseFileExtension(const juce::String& remoteFileUrl)
+{
+    const auto decoded = juce::URL::removeEscapeChars(remoteFileUrl);
+    const auto dotIndex = decoded.lastIndexOfChar('.');
+    if (dotIndex < 0)
+    {
+        return ".wav";
+    }
+
+    const auto extension = decoded.substring(dotIndex);
+    if (extension.length() > 8 || extension.containsAnyOf("/?&"))
+    {
+        return ".wav";
+    }
+
+    return extension;
+}
 }  // namespace
 
 PluginHealthCheckResult PluginBackendClient::checkHealth(const juce::String& baseUrl) const
@@ -336,6 +354,52 @@ PluginGenerationPollResult PluginBackendClient::pollGeneration(const juce::Strin
         slot.label = buildResultLabel(*itemObject, index);
     }
 
+    return result;
+}
+
+PluginPreviewDownloadResult PluginBackendClient::downloadPreviewFile(const juce::String& baseUrl,
+                                                                     const juce::String& remoteFileUrl,
+                                                                     int slotIndex) const
+{
+    PluginPreviewDownloadResult result;
+    result.slotIndex = slotIndex;
+    if (remoteFileUrl.isEmpty())
+    {
+        result.errorMessage = "The backend did not return an audio file URL.";
+        return result;
+    }
+
+    int statusCode = 0;
+    auto stream = buildUrl(baseUrl, remoteFileUrl)
+                      .createInputStream(juce::URL::InputStreamOptions(juce::URL::ParameterHandling::inAddress)
+                                             .withConnectionTimeoutMs(kNetworkTimeoutMs)
+                                             .withStatusCode(&statusCode)
+                                             .withNumRedirectsToFollow(4)
+                                             .withHttpRequestCmd("GET"));
+    if (stream == nullptr || statusCode != 200)
+    {
+        result.errorMessage = "Could not download the generated preview audio.";
+        return result;
+    }
+
+    auto previewFile = juce::File::getSpecialLocation(juce::File::tempDirectory)
+                           .getNonexistentChildFile("acestep-vst3-preview-"
+                                                        + juce::String(slotIndex + 1),
+                                                    chooseFileExtension(remoteFileUrl),
+                                                    false);
+    juce::FileOutputStream output(previewFile);
+    if (!output.openedOk())
+    {
+        result.errorMessage = "Could not create a temporary preview file.";
+        return result;
+    }
+
+    output.writeFromInputStream(*stream, -1);
+    output.flush();
+
+    result.succeeded = true;
+    result.localFilePath = previewFile.getFullPathName();
+    result.displayName = previewFile.getFileName();
     return result;
 }
 }  // namespace acestep::vst3

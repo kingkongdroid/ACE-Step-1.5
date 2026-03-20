@@ -7,6 +7,7 @@
 
 #include "PluginBackendClient.h"
 #include "PluginConfig.h"
+#include "PluginPreview.h"
 #include "PluginState.h"
 
 namespace acestep::vst3
@@ -42,6 +43,13 @@ public:
 
     const PluginState& getState() const noexcept;
     PluginState& getMutableState() noexcept;
+    [[nodiscard]] bool loadPreviewFile(const juce::File& file);
+    void clearPreviewFile();
+    void playPreview();
+    void stopPreview();
+    void revealPreviewFile() const;
+    [[nodiscard]] bool hasPreviewFile() const;
+    [[nodiscard]] bool isPreviewPlaying() const;
     void requestGeneration();
     void selectResultSlot(int index);
     void pumpBackendWorkflow();
@@ -53,6 +61,7 @@ private:
         healthCheck,
         submitGeneration,
         pollGeneration,
+        downloadPreview,
     };
 
     struct BackendTaskResult final
@@ -61,15 +70,19 @@ private:
         PluginHealthCheckResult health;
         PluginGenerationStartResult generationStart;
         PluginGenerationPollResult generationPoll;
+        PluginPreviewDownloadResult previewDownload;
     };
 
     void scheduleHealthCheck();
     void scheduleGenerationStart();
     void scheduleGenerationPoll();
+    void schedulePreviewDownload(int slotIndex);
     void applyCompletedTask(const BackendTaskResult& taskResult);
     void clearGeneratedResults();
+    void syncPreviewFromState();
 
     PluginState state_;
+    PluginPreview preview_;
     PluginBackendClient backendClient_;
     juce::ThreadPool backendThreadPool_ {1};
     juce::CriticalSection backendTaskLock_;
@@ -78,6 +91,7 @@ private:
     juce::uint32 lastHealthCheckAtMs_ = 0;
     juce::uint32 lastPollRequestAtMs_ = 0;
     juce::String lastHealthCheckedBaseUrl_;
+    std::optional<int> pendingPreviewDownloadSlot_;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(ACEStepVST3AudioProcessor)
 };

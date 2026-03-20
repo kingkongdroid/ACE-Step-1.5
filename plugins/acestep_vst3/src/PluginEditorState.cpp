@@ -8,7 +8,7 @@ namespace acestep::vst3
 void ACEStepVST3AudioProcessorEditor::configureLabels()
 {
     titleLabel_.setText("ACE-Step VST3 MVP UI", juce::dontSendNotification);
-    titleLabel_.setFont(juce::Font(20.0f, juce::Font::bold));
+    titleLabel_.setFont(juce::Font(juce::FontOptions(20.0f, juce::Font::bold)));
     subtitleLabel_.setText("State-driven prompt, job, and result workflow shell.",
                            juce::dontSendNotification);
 
@@ -16,7 +16,7 @@ void ACEStepVST3AudioProcessorEditor::configureLabels()
                         &lyricsLabel_, &durationLabel_, &seedLabel_, &modelLabel_,
                         &qualityLabel_, &backendStatusTitle_, &backendStatusValue_,
                         &jobStatusTitle_, &jobStatusValue_, &errorTitle_, &errorValue_,
-                        &resultsLabel_})
+                        &resultsLabel_, &previewTitle_, &previewValue_})
     {
         label->setJustificationType(juce::Justification::centredLeft);
         addAndMakeVisible(*label);
@@ -33,6 +33,7 @@ void ACEStepVST3AudioProcessorEditor::configureLabels()
     jobStatusTitle_.setText("Job status", juce::dontSendNotification);
     errorTitle_.setText("Error state", juce::dontSendNotification);
     resultsLabel_.setText("Result slot selection", juce::dontSendNotification);
+    previewTitle_.setText("Preview and file handoff", juce::dontSendNotification);
     errorValue_.setColour(juce::Label::textColourId, juce::Colours::lightsalmon);
 }
 
@@ -87,13 +88,23 @@ void ACEStepVST3AudioProcessorEditor::configureSelectors()
         processor_.requestGeneration();
         refreshStatusViews();
     };
+    choosePreviewButton_.onClick = [this] { choosePreviewFile(); };
+    playPreviewButton_.onClick = [this] { playPreviewFile(); };
+    stopPreviewButton_.onClick = [this] { stopPreviewFile(); };
+    clearPreviewButton_.onClick = [this] { clearPreviewFile(); };
+    revealPreviewButton_.onClick = [this] { revealPreviewFile(); };
 
     for (auto* component : {static_cast<juce::Component*>(&durationBox_),
                             static_cast<juce::Component*>(&modelBox_),
                             static_cast<juce::Component*>(&qualityBox_),
                             static_cast<juce::Component*>(&backendStatusBox_),
                             static_cast<juce::Component*>(&resultSlotBox_),
-                            static_cast<juce::Component*>(&generateButton_)})
+                            static_cast<juce::Component*>(&generateButton_),
+                            static_cast<juce::Component*>(&choosePreviewButton_),
+                            static_cast<juce::Component*>(&playPreviewButton_),
+                            static_cast<juce::Component*>(&stopPreviewButton_),
+                            static_cast<juce::Component*>(&clearPreviewButton_),
+                            static_cast<juce::Component*>(&revealPreviewButton_)})
     {
         addAndMakeVisible(*component);
     }
@@ -179,6 +190,18 @@ void ACEStepVST3AudioProcessorEditor::refreshStatusViews()
                             juce::dontSendNotification);
     errorValue_.setText(state.errorMessage.isEmpty() ? "No active error." : state.errorMessage,
                         juce::dontSendNotification);
+
+    auto previewText = state.previewDisplayName.isEmpty() ? "No preview file loaded."
+                                                          : state.previewDisplayName;
+    previewText += "\n";
+    previewText += state.previewFilePath.isEmpty() ? "Choose a local audio file to preview or reveal."
+                                                   : state.previewFilePath;
+    if (processor_.isPreviewPlaying())
+    {
+        previewText += "\nPlayback: active";
+    }
+    previewValue_.setText(previewText, juce::dontSendNotification);
+
     const auto isBusy = state.jobStatus == JobStatus::submitting
                         || state.jobStatus == JobStatus::queuedOrRunning;
     generateButton_.setEnabled(!isBusy);

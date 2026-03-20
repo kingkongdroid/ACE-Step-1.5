@@ -7,7 +7,7 @@ namespace acestep::vst3
 namespace
 {
 constexpr int kEditorWidth = 720;
-constexpr int kEditorHeight = 640;
+constexpr int kEditorHeight = 760;
 }  // namespace
 
 ACEStepVST3AudioProcessorEditor::ACEStepVST3AudioProcessorEditor(
@@ -86,6 +86,21 @@ void ACEStepVST3AudioProcessorEditor::resized()
     bounds.removeFromTop(8);
     resultsLabel_.setBounds(bounds.removeFromTop(18));
     resultSlotBox_.setBounds(bounds.removeFromTop(28));
+
+    bounds.removeFromTop(12);
+    previewTitle_.setBounds(bounds.removeFromTop(18));
+    previewValue_.setBounds(bounds.removeFromTop(56));
+    bounds.removeFromTop(8);
+    auto previewButtons = bounds.removeFromTop(30);
+    choosePreviewButton_.setBounds(previewButtons.removeFromLeft(180));
+    previewButtons.removeFromLeft(8);
+    playPreviewButton_.setBounds(previewButtons.removeFromLeft(72));
+    previewButtons.removeFromLeft(8);
+    stopPreviewButton_.setBounds(previewButtons.removeFromLeft(72));
+    previewButtons.removeFromLeft(8);
+    clearPreviewButton_.setBounds(previewButtons.removeFromLeft(72));
+    previewButtons.removeFromLeft(8);
+    revealPreviewButton_.setBounds(previewButtons.removeFromLeft(120));
 }
 
 void ACEStepVST3AudioProcessorEditor::timerCallback()

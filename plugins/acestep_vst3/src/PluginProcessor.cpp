@@ -14,10 +14,13 @@ ACEStepVST3AudioProcessor::~ACEStepVST3AudioProcessor() = default;
 
 void ACEStepVST3AudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
 {
-    juce::ignoreUnused(sampleRate, samplesPerBlock);
+    preview_.prepareToPlay(sampleRate, samplesPerBlock);
 }
 
-void ACEStepVST3AudioProcessor::releaseResources() {}
+void ACEStepVST3AudioProcessor::releaseResources()
+{
+    preview_.releaseResources();
+}
 
 bool ACEStepVST3AudioProcessor::isBusesLayoutSupported(const BusesLayout& layouts) const
 {
@@ -34,6 +37,7 @@ void ACEStepVST3AudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
 {
     juce::ignoreUnused(midiMessages);
     buffer.clear();
+    preview_.render(buffer);
 }
 
 juce::AudioProcessorEditor* ACEStepVST3AudioProcessor::createEditor()
@@ -118,6 +122,7 @@ void ACEStepVST3AudioProcessor::setStateInformation(const void* data, int sizeIn
         if (auto parsedState = parseStateXml(*xml))
         {
             state_ = *parsedState;
+            syncPreviewFromState();
         }
     }
 }
@@ -132,6 +137,61 @@ PluginState& ACEStepVST3AudioProcessor::getMutableState() noexcept
     return state_;
 }
 
+bool ACEStepVST3AudioProcessor::loadPreviewFile(const juce::File& file)
+{
+    juce::String errorMessage;
+    if (!preview_.loadFile(file, errorMessage))
+    {
+        state_.errorMessage = errorMessage;
+        return false;
+    }
+
+    state_.previewFilePath = file.getFullPathName();
+    state_.previewDisplayName = file.getFileName();
+    state_.errorMessage = {};
+    return true;
+}
+
+void ACEStepVST3AudioProcessor::clearPreviewFile()
+{
+    preview_.clear();
+    state_.previewFilePath = {};
+    state_.previewDisplayName = {};
+    state_.errorMessage = {};
+}
+
+void ACEStepVST3AudioProcessor::playPreview()
+{
+    if (!hasPreviewFile())
+    {
+        state_.errorMessage = "Load a preview file before playing it.";
+        return;
+    }
+
+    state_.errorMessage = {};
+    preview_.play();
+}
+
+void ACEStepVST3AudioProcessor::stopPreview()
+{
+    preview_.stop();
+}
+
+void ACEStepVST3AudioProcessor::revealPreviewFile() const
+{
+    preview_.revealToUser();
+}
+
+bool ACEStepVST3AudioProcessor::hasPreviewFile() const
+{
+    return preview_.hasLoadedFile();
+}
+
+bool ACEStepVST3AudioProcessor::isPreviewPlaying() const
+{
+    return preview_.isPlaying();
+}
+
 void ACEStepVST3AudioProcessor::requestGeneration()
 {
     if (state_.prompt.trim().isEmpty())
@@ -143,6 +203,8 @@ void ACEStepVST3AudioProcessor::requestGeneration()
     }
 
     clearGeneratedResults();
+    stopPreview();
+    clearPreviewFile();
     state_.jobStatus = JobStatus::submitting;
     state_.progressText = "Submitting request...";
     state_.errorMessage = {};
@@ -151,6 +213,11 @@ void ACEStepVST3AudioProcessor::requestGeneration()
 void ACEStepVST3AudioProcessor::selectResultSlot(int index)
 {
     state_.selectedResultSlot = juce::jlimit(0, kResultSlotCount - 1, index);
+    const auto& localPath = state_.resultLocalPaths[static_cast<size_t>(state_.selectedResultSlot)];
+    if (localPath.isNotEmpty())
+    {
+        [[maybe_unused]] const auto loaded = loadPreviewFile(juce::File(localPath));
+    }
 }
 
 void ACEStepVST3AudioProcessor::pumpBackendWorkflow()
@@ -175,6 +242,13 @@ void ACEStepVST3AudioProcessor::pumpBackendWorkflow()
         return;
     }
 
+    if (pendingPreviewDownloadSlot_.has_value())
+    {
+        schedulePreviewDownload(*pendingPreviewDownloadSlot_);
+        pendingPreviewDownloadSlot_.reset();
+        return;
+    }
+
     const auto now = juce::Time::getMillisecondCounter();
     if (state_.jobStatus == JobStatus::submitting)
     {
@@ -192,7 +266,8 @@ void ACEStepVST3AudioProcessor::pumpBackendWorkflow()
     if (state_.jobStatus == JobStatus::idle || state_.jobStatus == JobStatus::failed
         || state_.jobStatus == JobStatus::succeeded)
     {
-        if (lastHealthCheckedBaseUrl_ != state_.backendBaseUrl || now - lastHealthCheckAtMs_ >= 5000)
+        if (lastHealthCheckedBaseUrl_ != state_.backendBaseUrl
+            || now - lastHealthCheckAtMs_ >= 5000)
         {
             scheduleHealthCheck();
         }
@@ -260,6 +335,29 @@ void ACEStepVST3AudioProcessor::scheduleGenerationPoll()
     }));
 }
 
+void ACEStepVST3AudioProcessor::schedulePreviewDownload(int slotIndex)
+{
+    if (backendTaskRunning_.exchange(true))
+    {
+        pendingPreviewDownloadSlot_ = slotIndex;
+        return;
+    }
+
+    const auto baseUrl = state_.backendBaseUrl;
+    const auto remoteFileUrl = state_.resultFileUrls[static_cast<size_t>(slotIndex)];
+    backendThreadPool_.addJob(std::function<juce::ThreadPoolJob::JobStatus()>(
+        [this, baseUrl, remoteFileUrl, slotIndex]() {
+            BackendTaskResult taskResult;
+            taskResult.kind = BackendTaskKind::downloadPreview;
+            taskResult.previewDownload =
+                backendClient_.downloadPreviewFile(baseUrl, remoteFileUrl, slotIndex);
+            const juce::ScopedLock lock(backendTaskLock_);
+            completedBackendTask_ = std::move(taskResult);
+            backendTaskRunning_.store(false);
+            return juce::ThreadPoolJob::jobHasFinished;
+        }));
+}
+
 void ACEStepVST3AudioProcessor::applyCompletedTask(const BackendTaskResult& taskResult)
 {
     switch (taskResult.kind)
@@ -317,9 +415,32 @@ void ACEStepVST3AudioProcessor::applyCompletedTask(const BackendTaskResult& task
                 state_.resultFileUrls[static_cast<size_t>(index)] = slot.remoteFileUrl;
             }
             state_.selectedResultSlot = 0;
-            if (state_.resultFileUrls[0].isEmpty())
+            if (state_.resultFileUrls[0].isNotEmpty())
+            {
+                pendingPreviewDownloadSlot_ = 0;
+            }
+            else
             {
                 state_.errorMessage = "Task finished but no audio file was returned.";
+            }
+            return;
+        case BackendTaskKind::downloadPreview:
+            if (!taskResult.previewDownload.succeeded)
+            {
+                state_.errorMessage = taskResult.previewDownload.errorMessage;
+                return;
+            }
+
+            if (taskResult.previewDownload.slotIndex >= 0
+                && taskResult.previewDownload.slotIndex < kResultSlotCount)
+            {
+                const auto slotIndex = static_cast<size_t>(taskResult.previewDownload.slotIndex);
+                state_.resultLocalPaths[slotIndex] = taskResult.previewDownload.localFilePath;
+                if (state_.selectedResultSlot == taskResult.previewDownload.slotIndex)
+                {
+                    [[maybe_unused]] const auto loaded =
+                        loadPreviewFile(juce::File(taskResult.previewDownload.localFilePath));
+                }
             }
             return;
         case BackendTaskKind::none:
@@ -332,11 +453,32 @@ void ACEStepVST3AudioProcessor::clearGeneratedResults()
     state_.currentTaskId = {};
     state_.progressText = {};
     state_.selectedResultSlot = 0;
+    pendingPreviewDownloadSlot_.reset();
     for (int index = 0; index < kResultSlotCount; ++index)
     {
         state_.resultSlots[static_cast<size_t>(index)] = {};
         state_.resultFileUrls[static_cast<size_t>(index)] = {};
+        state_.resultLocalPaths[static_cast<size_t>(index)] = {};
     }
+}
+
+void ACEStepVST3AudioProcessor::syncPreviewFromState()
+{
+    preview_.clear();
+    if (state_.previewFilePath.isEmpty())
+    {
+        return;
+    }
+
+    juce::String errorMessage;
+    const juce::File previewFile(state_.previewFilePath);
+    if (!preview_.loadFile(previewFile, errorMessage))
+    {
+        state_.errorMessage = errorMessage;
+        return;
+    }
+
+    state_.previewDisplayName = previewFile.getFileName();
 }
 }  // namespace acestep::vst3
 

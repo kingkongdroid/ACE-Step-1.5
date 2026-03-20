@@ -29,6 +29,9 @@ struct PluginState final
     int selectedResultSlot = 0;
     std::array<juce::String, static_cast<size_t>(kResultSlotCount)> resultSlots;
     std::array<juce::String, static_cast<size_t>(kResultSlotCount)> resultFileUrls;
+    std::array<juce::String, static_cast<size_t>(kResultSlotCount)> resultLocalPaths;
+    juce::String previewFilePath;
+    juce::String previewDisplayName;
 };
 
 [[nodiscard]] std::unique_ptr<juce::XmlElement> createStateXml(const PluginState& state);

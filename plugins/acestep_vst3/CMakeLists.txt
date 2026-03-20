@@ -38,7 +38,9 @@ target_sources(
         src/PluginBackendClient.cpp
         src/PluginEditor.cpp
         src/PluginEditorState.cpp
+        src/PluginEditorPreview.cpp
         src/PluginEnums.cpp
+        src/PluginPreview.cpp
         src/PluginProcessor.cpp
         src/PluginState.cpp
 )
