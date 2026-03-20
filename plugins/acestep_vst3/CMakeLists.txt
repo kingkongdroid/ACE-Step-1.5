@@ -43,6 +43,13 @@ target_sources(
         src/PluginPreview.cpp
         src/PluginProcessor.cpp
         src/PluginState.cpp
+        src/PreviewDeckComponent.cpp
+        src/ResultDeckComponent.cpp
+        src/StatusStripComponent.cpp
+        src/SynthPanelComponent.cpp
+        src/TapeTransportComponent.cpp
+        src/V2Chrome.cpp
+        src/V2LookAndFeel.cpp
 )
 
 target_compile_features(acestep_vst3 PRIVATE cxx_std_20)
