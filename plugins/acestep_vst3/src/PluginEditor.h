@@ -66,6 +66,7 @@ private:
     juce::TextButton stopPreviewButton_ {"Stop"};
     juce::TextButton clearPreviewButton_ {"Clear"};
     juce::TextButton revealPreviewButton_ {"Reveal File"};
+    std::unique_ptr<juce::FileChooser> previewChooser_;
     bool isSyncing_ = false;
     int mockGenerationPhase_ = -1;
 

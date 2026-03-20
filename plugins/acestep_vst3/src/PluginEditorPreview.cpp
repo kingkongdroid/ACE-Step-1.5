@@ -6,17 +6,23 @@ namespace acestep::vst3
 {
 void ACEStepVST3AudioProcessorEditor::choosePreviewFile()
 {
-    juce::FileChooser chooser("Select preview audio file",
-                              {},
-                              "*.wav;*.aiff;*.flac;*.ogg;*.mp3");
-    if (!chooser.browseForFileToOpen())
-    {
-        return;
-    }
+    previewChooser_ = std::make_unique<juce::FileChooser>("Select preview audio file",
+                                                          juce::File(),
+                                                          "*.wav;*.aiff;*.flac;*.ogg;*.mp3");
+    previewChooser_->launchAsync(juce::FileBrowserComponent::openMode
+                                     | juce::FileBrowserComponent::canSelectFiles,
+                                 [this](const juce::FileChooser& chooser) {
+                                     const auto file = chooser.getResult();
+                                     previewChooser_.reset();
+                                     if (file == juce::File())
+                                     {
+                                         return;
+                                     }
 
-    processor_.stopPreview();
-    processor_.loadPreviewFile(chooser.getResult());
-    refreshStatusViews();
+                                     processor_.stopPreview();
+                                     [[maybe_unused]] const auto loaded = processor_.loadPreviewFile(file);
+                                     refreshStatusViews();
+                                 });
 }
 
 void ACEStepVST3AudioProcessorEditor::playPreviewFile()
