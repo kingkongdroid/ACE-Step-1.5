@@ -16,6 +16,7 @@ ResultDeckComponent::ResultDeckComponent()
     summaryLabel_.setJustificationType(juce::Justification::centredLeft);
     compareSummaryLabel_.setColour(juce::Label::textColourId, v2::kAccentMint);
     compareSummaryLabel_.setJustificationType(juce::Justification::centredLeft);
+    dragToDawButton_.setButtonText("Drag WAV to Track");
     addAndMakeVisible(resultLabel_);
     addAndMakeVisible(resultSelector_);
     addAndMakeVisible(summaryLabel_);
@@ -42,8 +43,15 @@ void ResultDeckComponent::resized()
     resultLabel_.setBounds(area.removeFromTop(18));
     resultSelector_.setBounds(area.removeFromTop(32));
     area.removeFromTop(10);
-    summaryLabel_.setBounds(area.removeFromTop(52));
+    summaryLabel_.setBounds(area.removeFromTop(46));
     area.removeFromTop(8);
+
+    auto handoffRow = area.removeFromTop(34);
+    dragToDawButton_.setBounds(handoffRow.removeFromLeft(184));
+    handoffRow.removeFromLeft(12);
+    compareSummaryLabel_.setBounds(handoffRow);
+
+    area.removeFromTop(10);
 
     auto comparePrimaryRow = area.removeFromTop(26);
     comparePrimaryLabel_.setBounds(comparePrimaryRow.removeFromLeft(84));
@@ -59,12 +67,7 @@ void ResultDeckComponent::resized()
     cueCompareBButton_.setBounds(compareSecondaryRow.removeFromLeft(84));
 
     area.removeFromTop(10);
-    auto compareFooter = area.removeFromTop(28);
-    toggleCompareButton_.setBounds(compareFooter.removeFromLeft(116));
-    compareFooter.removeFromLeft(12);
-    dragToDawButton_.setBounds(compareFooter.removeFromRight(132));
-    compareFooter.removeFromRight(12);
-    compareSummaryLabel_.setBounds(compareFooter);
+    toggleCompareButton_.setBounds(area.removeFromTop(28).removeFromLeft(128));
 }
 
 juce::ComboBox& ResultDeckComponent::resultSelector() noexcept { return resultSelector_; }

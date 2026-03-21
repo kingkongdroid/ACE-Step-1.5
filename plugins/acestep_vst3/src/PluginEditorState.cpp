@@ -393,9 +393,8 @@ void ACEStepVST3AudioProcessorEditor::refreshStatusViews()
     const auto& remoteUrl = state.resultFileUrls[static_cast<size_t>(state.selectedResultSlot)];
     if (!localPath.isEmpty())
     {
-        takeDetail += "\n" + formatFileSummary("LOCAL", localPath);
-        takeDetail += "\nPATH // " + localPath;
-        takeDetail += "\nHANDOFF // Drag to DAW";
+        takeDetail += "\nFILE // " + juce::File(localPath).getFileName();
+        takeDetail += "\nREADY // audition or drag into the DAW";
     }
     else if (!remoteUrl.isEmpty())
     {
@@ -413,7 +412,7 @@ void ACEStepVST3AudioProcessorEditor::refreshStatusViews()
     auto compareSummary = juce::String("COMPARE // ");
     if (comparePrimarySlot == 0 || compareSecondarySlot == 0)
     {
-        compareSummary += "Select two result slots";
+        compareSummary += "Set A and B takes";
     }
     else
     {
