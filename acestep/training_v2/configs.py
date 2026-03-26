@@ -172,6 +172,12 @@ class TrainingConfigV2(TrainingConfig):
     precision: str = "auto"
     """Precision: 'auto', 'bf16', 'fp16', 'fp32'."""
 
+    num_devices: int = 1
+    """Number of GPUs for DDP training. >1 enables DDP strategy."""
+
+    strategy: str = "auto"
+    """Distributed strategy: 'auto' or 'ddp'."""
+
     # --- Checkpointing ------------------------------------------------------
     resume_from: Optional[str] = None
     """Path to checkpoint directory to resume training from."""
