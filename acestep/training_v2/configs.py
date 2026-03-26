@@ -267,6 +267,8 @@ class TrainingConfigV2(TrainingConfig):
                 "dataset_dir": self.dataset_dir,
                 "device": self.device,
                 "precision": self.precision,
+                "num_devices": self.num_devices,
+                "strategy": self.strategy,
                 "resume_from": self.resume_from,
                 "log_dir": self.log_dir,
                 "log_every": self.log_every,
