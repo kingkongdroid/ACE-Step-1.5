@@ -230,8 +230,22 @@ class FixedLoRATrainer:
         accelerator = device_type if device_type in ("cuda", "xpu", "mps", "cpu") else "auto"
 
         # -- Fabric init ----------------------------------------------------
-        num_devices = getattr(cfg, "num_devices", 1)
+        num_devices = max(1, getattr(cfg, "num_devices", 1))
         strategy_cfg = getattr(cfg, "strategy", "auto")
+
+        # Cap num_devices to available GPUs to avoid Fabric launch errors.
+        if device_type == "cuda" and torch.cuda.is_available():
+            available = torch.cuda.device_count()
+            if num_devices > available:
+                logger.warning(
+                    "Requested %d devices but only %d CUDA GPUs available; clamping.",
+                    num_devices, available,
+                )
+                num_devices = max(1, available)
+
+        # DDP with a single device is pointless; fall back to auto.
+        if num_devices == 1 and strategy_cfg == "ddp":
+            strategy_cfg = "auto"
 
         if num_devices > 1:
             # Multi-GPU DDP mode
@@ -400,16 +414,19 @@ class FixedLoRATrainer:
                         tb.close()
                     return
 
-                loss = self.module.training_step(batch)
-                loss = loss / cfg.gradient_accumulation_steps
-
                 # In DDP with gradient accumulation, skip gradient sync on
-                # intermediate steps for better performance.
+                # intermediate steps for better performance.  Both forward
+                # and backward must run inside the context so DDP hooks are
+                # correctly suppressed.
                 is_last_accum = (accumulation_step + 1) >= cfg.gradient_accumulation_steps
                 if world_size > 1 and not is_last_accum:
                     with self.fabric.no_backward_sync(self.module.model.decoder):
+                        loss = self.module.training_step(batch)
+                        loss = loss / cfg.gradient_accumulation_steps
                         self.fabric.backward(loss)
                 else:
+                    loss = self.module.training_step(batch)
+                    loss = loss / cfg.gradient_accumulation_steps
                     self.fabric.backward(loss)
 
                 accumulated_loss += loss.item()
