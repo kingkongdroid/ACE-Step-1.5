@@ -1,19 +1,19 @@
 """
-ACE-Step OpenRouter API 压力测试脚本
+ACE-Step OpenRouter API stress test script
 
-支持并发测试，用于测试服务的最大 QPS 和性能表现。
+Supports concurrent testing to measure the maximum QPS and performance of the service.
 
 Usage:
-    # 基本测试 - 10 并发，100 请求
+    # Basic test - 10 concurrent workers, 100 requests
     python -m openrouter.stress_test
 
-    # 自定义参数测试
+    # Custom parameter test
     python -m openrouter.stress_test --concurrency 50 --requests 500
 
-    # 逐步加压测试
+    # Ramp-up test
     python -m openrouter.stress_test --mode ramp --max-concurrency 100 --step 10
 
-    # 持续压测
+    # Duration-based stress test
     python -m openrouter.stress_test --mode duration --duration 60 --concurrency 20
 """
 
@@ -35,7 +35,7 @@ import requests
 
 
 # =============================================================================
-# 配置
+# Configuration
 # =============================================================================
 
 DEFAULT_BASE_URL = "https://api.acemusic.ai"
@@ -45,17 +45,17 @@ DEFAULT_TOTAL_REQUESTS = 100
 
 @dataclass
 class RequestResult:
-    """单次请求结果"""
+    """Result of a single request"""
     success: bool
     status_code: int
-    latency: float  # 秒
+    latency: float  # seconds
     error_message: str = ""
     timestamp: float = 0.0
 
 
 @dataclass
 class StressTestStats:
-    """压力测试统计数据"""
+    """Stress test statistics"""
     total_requests: int = 0
     successful_requests: int = 0
     failed_requests: int = 0
@@ -66,7 +66,7 @@ class StressTestStats:
     end_time: float = 0.0
 
     def add_result(self, result: RequestResult):
-        """添加请求结果"""
+        """Add a request result"""
         self.total_requests += 1
         self.status_codes[result.status_code] += 1
 
@@ -79,32 +79,32 @@ class StressTestStats:
 
     @property
     def success_rate(self) -> float:
-        """成功率"""
+        """Success rate"""
         if self.total_requests == 0:
             return 0.0
         return (self.successful_requests / self.total_requests) * 100
 
     @property
     def duration(self) -> float:
-        """测试持续时间"""
+        """Test duration"""
         return self.end_time - self.start_time
 
     @property
     def qps(self) -> float:
-        """每秒请求数 (QPS)"""
+        """Requests per second (QPS)"""
         if self.duration == 0:
             return 0.0
         return self.total_requests / self.duration
 
     @property
     def successful_qps(self) -> float:
-        """成功请求的 QPS"""
+        """QPS for successful requests"""
         if self.duration == 0:
             return 0.0
         return self.successful_requests / self.duration
 
     def get_latency_stats(self) -> Dict[str, float]:
-        """获取延迟统计数据"""
+        """Get latency statistics"""
         if not self.latencies:
             return {
                 "min": 0.0,
@@ -131,7 +131,7 @@ class StressTestStats:
 
 
 class StressTester:
-    """压力测试器"""
+    """Stress tester"""
 
     def __init__(
         self,
@@ -150,14 +150,14 @@ class StressTester:
         self.live_stats = StressTestStats()
 
     def get_headers(self) -> dict:
-        """构建请求头"""
+        """Build request headers"""
         headers = {"Content-Type": "application/json"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
         return headers
 
     def make_request(self) -> RequestResult:
-        """执行单次请求"""
+        """Execute a single request"""
         start_time = time.time()
         timestamp = start_time
 
@@ -190,7 +190,7 @@ class StressTester:
                     timeout=self.timeout
                 )
             else:
-                # 默认 health
+                # Default to health
                 resp = requests.get(
                     f"{self.base_url}/health",
                     timeout=self.timeout
@@ -240,7 +240,7 @@ class StressTester:
             )
 
     def _get_generate_payload(self) -> dict:
-        """获取生成请求的 payload"""
+        """Get the payload for a generate request"""
         return {
             "messages": [
                 {"role": "user", "content": "Generate an upbeat pop song about summer"}
@@ -253,7 +253,7 @@ class StressTester:
         }
 
     def _get_instrumental_payload(self) -> dict:
-        """获取纯音乐请求的 payload"""
+        """Get the payload for an instrumental request"""
         return {
             "messages": [
                 {"role": "user", "content": "<prompt>Epic orchestral cinematic score</prompt>"}
@@ -270,7 +270,7 @@ class StressTester:
         total_requests: int,
         show_progress: bool = True
     ) -> StressTestStats:
-        """固定请求数模式"""
+        """Fixed request count mode"""
         stats = StressTestStats()
         stats.start_time = time.time()
 
@@ -289,11 +289,11 @@ class StressTester:
                     elapsed = time.time() - stats.start_time
                     current_qps = completed / elapsed if elapsed > 0 else 0
                     print(
-                        f"\r进度: {completed}/{total_requests} "
+                        f"\rProgress: {completed}/{total_requests} "
                         f"({completed/total_requests*100:.1f}%) | "
-                        f"成功: {stats.successful_requests} | "
-                        f"失败: {stats.failed_requests} | "
-                        f"当前 QPS: {current_qps:.2f}",
+                        f"Success: {stats.successful_requests} | "
+                        f"Failed: {stats.failed_requests} | "
+                        f"Current QPS: {current_qps:.2f}",
                         end="", flush=True
                     )
 
@@ -303,12 +303,12 @@ class StressTester:
                 try:
                     future.result()
                 except Exception as e:
-                    print(f"\n工作线程异常: {e}")
+                    print(f"\nWorker thread exception: {e}")
 
         stats.end_time = time.time()
 
         if show_progress:
-            print()  # 换行
+            print()  # newline
 
         return stats
 
@@ -318,7 +318,7 @@ class StressTester:
         duration: int,
         show_progress: bool = True
     ) -> StressTestStats:
-        """持续时间模式"""
+        """Duration-based mode"""
         stats = StressTestStats()
         stats.start_time = time.time()
         stop_event = threading.Event()
@@ -329,14 +329,14 @@ class StressTester:
                 with self.lock:
                     stats.add_result(result)
 
-        # 启动工作线程
+        # Start worker threads
         threads = []
         for _ in range(concurrency):
             t = threading.Thread(target=worker, daemon=True)
             t.start()
             threads.append(t)
 
-        # 显示进度
+        # Show progress
         try:
             end_time = time.time() + duration
             while time.time() < end_time:
@@ -346,10 +346,10 @@ class StressTester:
 
                 if show_progress:
                     print(
-                        f"\r剩余时间: {remaining:.1f}s | "
-                        f"请求数: {stats.total_requests} | "
-                        f"成功: {stats.successful_requests} | "
-                        f"失败: {stats.failed_requests} | "
+                        f"\rTime remaining: {remaining:.1f}s | "
+                        f"Requests: {stats.total_requests} | "
+                        f"Success: {stats.successful_requests} | "
+                        f"Failed: {stats.failed_requests} | "
                         f"QPS: {current_qps:.2f}",
                         end="", flush=True
                     )
@@ -357,14 +357,14 @@ class StressTester:
         finally:
             stop_event.set()
 
-        # 等待所有线程结束
+        # Wait for all threads to finish
         for t in threads:
             t.join(timeout=5)
 
         stats.end_time = time.time()
 
         if show_progress:
-            print()  # 换行
+            print()  # newline
 
         return stats
 
@@ -375,12 +375,12 @@ class StressTester:
         requests_per_step: int,
         show_progress: bool = True
     ) -> List[Dict[str, Any]]:
-        """逐步加压模式"""
+        """Ramp-up mode"""
         results = []
 
         for concurrency in range(step, max_concurrency + 1, step):
             print(f"\n{'='*60}")
-            print(f"测试并发数: {concurrency}")
+            print(f"Testing concurrency: {concurrency}")
             print("=" * 60)
 
             stats = self.run_fixed_requests(
@@ -407,27 +407,27 @@ class StressTester:
 
             self._print_step_summary(result)
 
-            # 短暂休息让服务恢复
+            # Brief pause to let the service recover
             time.sleep(2)
 
         return results
 
 
     def _print_step_summary(self, result: Dict[str, Any]):
-        """打印单步测试摘要"""
-        print(f"\n并发数 {result['concurrency']} 测试结果:")
-        print(f"  总请求数: {result['total_requests']}")
-        print(f"  成功/失败: {result['successful_requests']}/{result['failed_requests']}")
-        print(f"  成功率: {result['success_rate']:.2f}%")
+        """Print summary for a single step"""
+        print(f"\nConcurrency {result['concurrency']} test results:")
+        print(f"  Total requests: {result['total_requests']}")
+        print(f"  Success/Failed: {result['successful_requests']}/{result['failed_requests']}")
+        print(f"  Success rate: {result['success_rate']:.2f}%")
         print(f"  QPS: {result['qps']:.2f}")
-        print(f"  成功 QPS: {result['successful_qps']:.2f}")
-        print(f"  平均延迟: {result['avg_latency']*1000:.2f}ms")
-        print(f"  P95 延迟: {result['p95_latency']*1000:.2f}ms")
-        print(f"  P99 延迟: {result['p99_latency']*1000:.2f}ms")
+        print(f"  Successful QPS: {result['successful_qps']:.2f}")
+        print(f"  Avg latency: {result['avg_latency']*1000:.2f}ms")
+        print(f"  P95 latency: {result['p95_latency']*1000:.2f}ms")
+        print(f"  P99 latency: {result['p99_latency']*1000:.2f}ms")
 
 
-def print_stats(stats: StressTestStats, title: str = "压力测试结果"):
-    """打印统计结果"""
+def print_stats(stats: StressTestStats, title: str = "Stress Test Results"):
+    """Print statistics"""
     latency_stats = stats.get_latency_stats()
 
     print("\n")
@@ -435,38 +435,38 @@ def print_stats(stats: StressTestStats, title: str = "压力测试结果"):
     print(f" {title}")
     print("=" * 70)
 
-    print("\n📊 基本统计")
+    print("\n📊 Basic Statistics")
     print("-" * 40)
-    print(f"  总请求数:       {stats.total_requests}")
-    print(f"  成功请求数:     {stats.successful_requests}")
-    print(f"  失败请求数:     {stats.failed_requests}")
-    print(f"  成功率:         {stats.success_rate:.2f}%")
+    print(f"  Total requests:       {stats.total_requests}")
+    print(f"  Successful requests:  {stats.successful_requests}")
+    print(f"  Failed requests:      {stats.failed_requests}")
+    print(f"  Success rate:         {stats.success_rate:.2f}%")
 
-    print("\n⏱️ 时间统计")
+    print("\n⏱️ Time Statistics")
     print("-" * 40)
-    print(f"  测试持续时间:   {stats.duration:.2f} 秒")
-    print(f"  总 QPS:         {stats.qps:.2f}")
-    print(f"  成功 QPS:       {stats.successful_qps:.2f}")
+    print(f"  Test duration:        {stats.duration:.2f} seconds")
+    print(f"  Total QPS:            {stats.qps:.2f}")
+    print(f"  Successful QPS:       {stats.successful_qps:.2f}")
 
-    print("\n📈 延迟统计 (毫秒)")
+    print("\n📈 Latency Statistics (milliseconds)")
     print("-" * 40)
-    print(f"  最小延迟:       {latency_stats['min']*1000:.2f}ms")
-    print(f"  最大延迟:       {latency_stats['max']*1000:.2f}ms")
-    print(f"  平均延迟:       {latency_stats['avg']*1000:.2f}ms")
-    print(f"  中位数延迟:     {latency_stats['median']*1000:.2f}ms")
-    print(f"  P90 延迟:       {latency_stats['p90']*1000:.2f}ms")
-    print(f"  P95 延迟:       {latency_stats['p95']*1000:.2f}ms")
-    print(f"  P99 延迟:       {latency_stats['p99']*1000:.2f}ms")
+    print(f"  Min latency:          {latency_stats['min']*1000:.2f}ms")
+    print(f"  Max latency:          {latency_stats['max']*1000:.2f}ms")
+    print(f"  Avg latency:          {latency_stats['avg']*1000:.2f}ms")
+    print(f"  Median latency:       {latency_stats['median']*1000:.2f}ms")
+    print(f"  P90 latency:          {latency_stats['p90']*1000:.2f}ms")
+    print(f"  P95 latency:          {latency_stats['p95']*1000:.2f}ms")
+    print(f"  P99 latency:          {latency_stats['p99']*1000:.2f}ms")
 
     if stats.status_codes:
-        print("\n📋 状态码分布")
+        print("\n📋 Status Code Distribution")
         print("-" * 40)
         for code, count in sorted(stats.status_codes.items()):
             percentage = (count / stats.total_requests) * 100
             print(f"  {code}:  {count:>8} ({percentage:.1f}%)")
 
     if stats.errors:
-        print("\n❌ 错误分布 (Top 10)")
+        print("\n❌ Error Distribution (Top 10)")
         print("-" * 40)
         sorted_errors = sorted(stats.errors.items(), key=lambda x: x[1], reverse=True)[:10]
         for error, count in sorted_errors:
@@ -477,17 +477,17 @@ def print_stats(stats: StressTestStats, title: str = "压力测试结果"):
 
 
 def print_ramp_summary(results: List[Dict[str, Any]]):
-    """打印逐步加压测试的汇总"""
+    """Print summary for a ramp-up test"""
     print("\n")
     print("=" * 90)
-    print(" 逐步加压测试汇总")
+    print(" Ramp-Up Test Summary")
     print("=" * 90)
 
-    # 表头
-    print(f"\n{'并发':>8} | {'请求数':>8} | {'成功率':>8} | {'QPS':>10} | {'成功QPS':>10} | {'平均延迟':>10} | {'P99延迟':>10}")
+    # Header
+    print(f"\n{'Concurrency':>8} | {'Requests':>8} | {'Success%':>8} | {'QPS':>10} | {'Succ.QPS':>10} | {'Avg Lat':>10} | {'P99 Lat':>10}")
     print("-" * 90)
 
-    # 数据行
+    # Data rows
     for r in results:
         print(
             f"{r['concurrency']:>8} | "
@@ -501,20 +501,20 @@ def print_ramp_summary(results: List[Dict[str, Any]]):
 
     print("-" * 90)
 
-    # 找出最佳 QPS
+    # Find best QPS
     best_qps = max(results, key=lambda x: x['successful_qps'])
-    print(f"\n🏆 最佳成功 QPS: {best_qps['successful_qps']:.2f} (并发数: {best_qps['concurrency']})")
+    print(f"\n🏆 Best successful QPS: {best_qps['successful_qps']:.2f} (concurrency: {best_qps['concurrency']})")
 
-    # 找出延迟瓶颈点（P99 延迟开始急剧上升的点）
+    # Find latency bottleneck (point where P99 latency starts rising sharply)
     for i in range(1, len(results)):
         if results[i]['p99_latency'] > results[i-1]['p99_latency'] * 2:
-            print(f"⚠️  延迟瓶颈点: 并发数 {results[i]['concurrency']} (P99 延迟开始急剧上升)")
+            print(f"⚠️  Latency bottleneck: concurrency {results[i]['concurrency']} (P99 latency starts rising sharply)")
             break
 
-    # 找出错误率开始上升的点
+    # Find point where error rate starts increasing
     for i, r in enumerate(results):
         if r['success_rate'] < 99:
-            print(f"⚠️  稳定性下降点: 并发数 {r['concurrency']} (成功率: {r['success_rate']:.1f}%)")
+            print(f"⚠️  Stability degradation point: concurrency {r['concurrency']} (success rate: {r['success_rate']:.1f}%)")
             break
 
     print()
@@ -522,23 +522,23 @@ def print_ramp_summary(results: List[Dict[str, Any]]):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="ACE-Step OpenRouter API 压力测试工具",
+        description="ACE-Step OpenRouter API stress test tool",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-示例:
-  # 健康检查接口压测
+Examples:
+  # Stress test the health check endpoint
   python -m openrouter.stress_test --test health --concurrency 100 --requests 1000
 
-  # 模型列表接口压测
+  # Stress test the model list endpoint
   python -m openrouter.stress_test --test models --concurrency 50 --requests 500
 
-  # 音乐生成接口压测 (注意: 生成请求较慢)
+  # Stress test the music generation endpoint (note: generation requests are slow)
   python -m openrouter.stress_test --test generate --concurrency 5 --requests 20
 
-  # 逐步加压测试
+  # Ramp-up test
   python -m openrouter.stress_test --mode ramp --max-concurrency 100 --step 10
 
-  # 持续时间压测 (60秒)
+  # Duration-based stress test (60 seconds)
   python -m openrouter.stress_test --mode duration --duration 60 --concurrency 50
         """
     )
@@ -546,105 +546,105 @@ def main():
     parser.add_argument(
         "--base-url",
         default=os.getenv("OPENROUTER_BASE_URL", DEFAULT_BASE_URL),
-        help=f"API 基础 URL (默认: {DEFAULT_BASE_URL})"
+        help=f"API base URL (default: {DEFAULT_BASE_URL})"
     )
     parser.add_argument(
         "--api-key",
         default=os.getenv("OPENROUTER_API_KEY"),
-        help="API 密钥 (可选)"
+        help="API key (optional)"
     )
     parser.add_argument(
         "--test",
         choices=["health", "models", "generate", "instrumental"],
         default="health",
-        help="要测试的接口类型 (默认: health)"
+        help="Endpoint type to test (default: health)"
     )
     parser.add_argument(
         "--mode",
         choices=["fixed", "duration", "ramp"],
         default="fixed",
-        help="测试模式: fixed=固定请求数, duration=持续时间, ramp=逐步加压 (默认: fixed)"
+        help="Test mode: fixed=fixed request count, duration=time-based, ramp=ramp-up (default: fixed)"
     )
     parser.add_argument(
         "--concurrency", "-c",
         type=int,
         default=DEFAULT_CONCURRENCY,
-        help=f"并发数 (默认: {DEFAULT_CONCURRENCY})"
+        help=f"Concurrency level (default: {DEFAULT_CONCURRENCY})"
     )
     parser.add_argument(
         "--requests", "-n",
         type=int,
         default=DEFAULT_TOTAL_REQUESTS,
-        help=f"总请求数 (fixed 模式) (默认: {DEFAULT_TOTAL_REQUESTS})"
+        help=f"Total number of requests (fixed mode) (default: {DEFAULT_TOTAL_REQUESTS})"
     )
     parser.add_argument(
         "--duration", "-d",
         type=int,
         default=60,
-        help="测试持续时间秒数 (duration 模式) (默认: 60)"
+        help="Test duration in seconds (duration mode) (default: 60)"
     )
     parser.add_argument(
         "--max-concurrency",
         type=int,
         default=100,
-        help="最大并发数 (ramp 模式) (默认: 100)"
+        help="Maximum concurrency level (ramp mode) (default: 100)"
     )
     parser.add_argument(
         "--step",
         type=int,
         default=10,
-        help="并发增长步长 (ramp 模式) (默认: 10)"
+        help="Concurrency step size (ramp mode) (default: 10)"
     )
     parser.add_argument(
         "--requests-per-step",
         type=int,
         default=100,
-        help="每个步骤的请求数 (ramp 模式) (默认: 100)"
+        help="Number of requests per step (ramp mode) (default: 100)"
     )
     parser.add_argument(
         "--timeout",
         type=int,
         default=300,
-        help="请求超时时间秒数 (默认: 300)"
+        help="Request timeout in seconds (default: 300)"
     )
     parser.add_argument(
         "--output", "-o",
         type=str,
-        help="输出结果到 JSON 文件"
+        help="Save results to a JSON file"
     )
     parser.add_argument(
         "--quiet", "-q",
         action="store_true",
-        help="减少输出信息"
+        help="Reduce output verbosity"
     )
 
     args = parser.parse_args()
 
-    # 打印配置信息
+    # Print configuration info
     print("=" * 70)
-    print(" ACE-Step OpenRouter API 压力测试")
+    print(" ACE-Step OpenRouter API Stress Test")
     print("=" * 70)
-    print(f"  时间:           {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"  Base URL:       {args.base_url}")
-    print(f"  API Key:        {'已设置' if args.api_key else '未设置'}")
-    print(f"  测试接口:       {args.test}")
-    print(f"  测试模式:       {args.mode}")
+    print(f"  Time:             {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"  Base URL:         {args.base_url}")
+    print(f"  API Key:          {'set' if args.api_key else 'not set'}")
+    print(f"  Test endpoint:    {args.test}")
+    print(f"  Test mode:        {args.mode}")
 
     if args.mode == "fixed":
-        print(f"  并发数:         {args.concurrency}")
-        print(f"  总请求数:       {args.requests}")
+        print(f"  Concurrency:      {args.concurrency}")
+        print(f"  Total requests:   {args.requests}")
     elif args.mode == "duration":
-        print(f"  并发数:         {args.concurrency}")
-        print(f"  持续时间:       {args.duration} 秒")
+        print(f"  Concurrency:      {args.concurrency}")
+        print(f"  Duration:         {args.duration} seconds")
     elif args.mode == "ramp":
-        print(f"  最大并发数:     {args.max_concurrency}")
-        print(f"  步长:           {args.step}")
-        print(f"  每步请求数:     {args.requests_per_step}")
+        print(f"  Max concurrency:  {args.max_concurrency}")
+        print(f"  Step size:        {args.step}")
+        print(f"  Requests/step:    {args.requests_per_step}")
 
-    print(f"  请求超时:       {args.timeout} 秒")
+    print(f"  Request timeout:  {args.timeout} seconds")
     print("=" * 70)
 
-    # 创建测试器
+    # Create tester
     tester = StressTester(
         base_url=args.base_url,
         api_key=args.api_key,
@@ -652,18 +652,18 @@ def main():
         test_type=args.test
     )
 
-    # 执行测试
+    # Run tests
     try:
         if args.mode == "fixed":
-            print(f"\n开始固定请求数测试 (并发: {args.concurrency}, 请求数: {args.requests})...\n")
+            print(f"\nStarting fixed request count test (concurrency: {args.concurrency}, requests: {args.requests})...\n")
             stats = tester.run_fixed_requests(
                 concurrency=args.concurrency,
                 total_requests=args.requests,
                 show_progress=not args.quiet
             )
-            print_stats(stats, f"压力测试结果 - {args.test.upper()} 接口")
+            print_stats(stats, f"Stress Test Results - {args.test.upper()} endpoint")
 
-            # 保存结果
+            # Save results
             if args.output:
                 latency_stats = stats.get_latency_stats()
                 output_data = {
@@ -684,19 +684,19 @@ def main():
                 }
                 with open(args.output, "w") as f:
                     json.dump(output_data, f, indent=2, ensure_ascii=False)
-                print(f"\n结果已保存到: {args.output}")
+                print(f"\nResults saved to: {args.output}")
 
         elif args.mode == "duration":
-            print(f"\n开始持续时间测试 (并发: {args.concurrency}, 时长: {args.duration}秒)...\n")
+            print(f"\nStarting duration-based test (concurrency: {args.concurrency}, duration: {args.duration}s)...\n")
             stats = tester.run_duration_based(
                 concurrency=args.concurrency,
                 duration=args.duration,
                 show_progress=not args.quiet
             )
-            print_stats(stats, f"压力测试结果 - {args.test.upper()} 接口 ({args.duration}秒)")
+            print_stats(stats, f"Stress Test Results - {args.test.upper()} endpoint ({args.duration}s)")
 
         elif args.mode == "ramp":
-            print(f"\n开始逐步加压测试 (最大并发: {args.max_concurrency}, 步长: {args.step})...\n")
+            print(f"\nStarting ramp-up test (max concurrency: {args.max_concurrency}, step: {args.step})...\n")
             results = tester.run_ramp_up(
                 max_concurrency=args.max_concurrency,
                 step=args.step,
@@ -705,7 +705,7 @@ def main():
             )
             print_ramp_summary(results)
 
-            # 保存结果
+            # Save results
             if args.output:
                 output_data = {
                     "test_type": args.test,
@@ -718,13 +718,13 @@ def main():
                 }
                 with open(args.output, "w") as f:
                     json.dump(output_data, f, indent=2, ensure_ascii=False)
-                print(f"结果已保存到: {args.output}")
+                print(f"Results saved to: {args.output}")
 
     except KeyboardInterrupt:
-        print("\n\n测试被用户中断")
+        print("\n\nTest interrupted by user")
         sys.exit(1)
     except Exception as e:
-        print(f"\n测试出错: {e}")
+        print(f"\nTest error: {e}")
         import traceback
         traceback.print_exc()
         sys.exit(1)

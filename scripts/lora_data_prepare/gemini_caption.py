@@ -476,7 +476,7 @@ def analysis_audio_by_gemini(
     except:
         json_result = extract_json_from_text(result)
     if json_result is None:
-        raise Exception(f"无法解析json, {result}")
+        raise Exception(f"Failed to parse JSON: {result}")
     return json_result
 
 
