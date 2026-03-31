@@ -2082,7 +2082,8 @@ class AceStepConditionGenerationModel(AceStepPreTrainedModel):
                             if not use_adg:
                                 # Use basic CFG for corrector to avoid mutating APG momentum twice per step
                                 vt2 = cfg_forward(pred_cond2, pred_null_cond2, diffusion_guidance_sale)
-                            else:
+                            elif t_prev > 0:
+                                # Guard against sigma=0 which causes NaN in ADG division
                                 vt2 = adg_forward(
                                     latents=xt_predicted,
                                     noise_pred_cond=pred_cond2,
@@ -2090,6 +2091,8 @@ class AceStepConditionGenerationModel(AceStepPreTrainedModel):
                                     sigma=t_prev,
                                     guidance_scale=diffusion_guidance_sale,
                                 )
+                            else:
+                                vt2 = cfg_forward(pred_cond2, pred_null_cond2, diffusion_guidance_sale)
                         else:
                             vt2 = pred_cond2
                     if use_norm_clamp:
