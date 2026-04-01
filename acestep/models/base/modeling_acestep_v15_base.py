@@ -1868,6 +1868,9 @@ class AceStepConditionGenerationModel(AceStepPreTrainedModel):
     ):
         # Backward-compat: accept the old misspelled key "diffusion_guidance_sale"
         # so that callers that have not yet updated their code still work correctly.
+        # Note: if both keys are passed simultaneously, the old key wins because Python
+        # cannot distinguish "explicit new key" from "new key at its default value".
+        # In practice callers should only ever pass one of the two.
         if "diffusion_guidance_sale" in kwargs:
             logger.warning(
                 "generate_audio() received deprecated kwarg 'diffusion_guidance_sale'; "

@@ -17,6 +17,7 @@ import torch
 
 
 from acestep.audio_utils import AudioSaver, apply_fade, generate_uuid_from_params, normalize_audio, get_lora_weights_hash
+from acestep.constants import BPM_MIN, BPM_MAX, DURATION_MAX, TASK_TYPES, VALID_TIME_SIGNATURES
 
 # HuggingFace Space environment detection
 IS_HUGGINGFACE_SPACE = os.environ.get("SPACE_ID") is not None
@@ -174,11 +175,6 @@ class GenerationParams:
 
     def __post_init__(self):
         """Validate and clamp parameters to safe ranges."""
-        from acestep.constants import (
-            BPM_MIN, BPM_MAX, DURATION_MAX,
-            TASK_TYPES, VALID_TIME_SIGNATURES,
-        )
-
         # --- Hard validation (raise on truly invalid values) ---
         if self.sampler_mode not in ("euler", "heun"):
             raise ValueError(
@@ -247,7 +243,7 @@ class GenerationParams:
                 )
                 self.bpm = BPM_MAX
 
-        if self.timesignature and self.timesignature not in ("", "auto"):
+        if self.timesignature not in ("", "auto"):
             try:
                 ts_int = int(self.timesignature)
                 if ts_int not in VALID_TIME_SIGNATURES:
@@ -267,6 +263,12 @@ class GenerationParams:
         self.cover_noise_strength = max(0.0, min(1.0, self.cover_noise_strength))
         self.cfg_interval_start = max(0.0, min(1.0, self.cfg_interval_start))
         self.cfg_interval_end = max(0.0, min(1.0, self.cfg_interval_end))
+        if self.cfg_interval_start > self.cfg_interval_end:
+            logger.warning(
+                "cfg_interval_start={:.2f} > cfg_interval_end={:.2f}, swapping to restore valid window.",
+                self.cfg_interval_start, self.cfg_interval_end,
+            )
+            self.cfg_interval_start, self.cfg_interval_end = self.cfg_interval_end, self.cfg_interval_start
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert config to dictionary for JSON serialization."""
