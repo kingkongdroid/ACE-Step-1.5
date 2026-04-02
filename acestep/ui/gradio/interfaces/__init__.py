@@ -33,6 +33,7 @@ from acestep.ui.gradio.interfaces.audio_player_preferences import (
 )
 from acestep.ui.gradio.interfaces.user_preferences import (
     get_user_preferences_head,
+    wire_preference_restore,
 )
 from acestep.ui.gradio.interfaces.result import create_results_section
 from acestep.ui.gradio.interfaces.training import create_training_section
@@ -367,5 +368,8 @@ def create_gradio_interface(dit_handler, llm_handler, dataset_handler, init_para
         
         # Connect training event handlers
         setup_training_event_handlers(demo, dit_handler, llm_handler, training_section)
-    
+
+        # Restore user preferences from browser localStorage on page load.
+        wire_preference_restore(demo, generation_section)
+
     return demo

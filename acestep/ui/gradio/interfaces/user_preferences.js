@@ -1,17 +1,22 @@
 /**
- * User preferences persistence via browser localStorage.
+ * User preferences persistence – SAVE side only.
  *
- * Saves and restores Gradio UI settings (output format, normalization, fades,
- * latent controls, etc.) so they survive page reloads and app restarts.
+ * Listens for user changes on Gradio UI controls and persists the current
+ * values to browser localStorage.  Restoration is handled on the Python side
+ * via ``gr.Blocks.load()`` so Gradio's own Svelte reactivity updates every
+ * component correctly.
  *
- * Extends the existing audio_player_preferences.js pattern.
+ * Storage schema:
+ *   key   = "acestep.ui.user_preferences"
+ *   value = JSON  { _version: 1, audio_format: "flac", … }
  */
 (() => {
     const STORAGE_KEY = "acestep.ui.user_preferences";
+    const SCHEMA_VERSION = 1;
     const DEBOUNCE_MS = 500;
 
     /**
-     * Map of preference key -> { elemId, type }.
+     * Map of preference key → { elemId, type }.
      *   elemId : the HTML elem_id set in Gradio
      *   type   : "dropdown" | "slider" | "checkbox" | "number"
      */
@@ -30,17 +35,9 @@
     };
 
     let saveTimer = null;
+    const wiredElements = new WeakSet();
 
     // ── Storage helpers ──────────────────────────────────────────────
-
-    const loadAll = () => {
-        try {
-            const raw = window.localStorage.getItem(STORAGE_KEY);
-            return raw ? JSON.parse(raw) : {};
-        } catch (_e) {
-            return {};
-        }
-    };
 
     const saveAll = (prefs) => {
         try {
@@ -52,21 +49,14 @@
 
     // ── DOM helpers ──────────────────────────────────────────────────
 
-    /**
-     * Find the actual input element inside a Gradio component wrapper.
-     * Gradio wraps inputs in divs with the elem_id; the real control
-     * is a child <input>, <select>, or <textarea>.
-     */
     const findInput = (elemId, type) => {
         const wrapper = document.getElementById(elemId);
         if (!wrapper) return null;
 
         if (type === "dropdown") {
-            // Gradio dropdown uses an <input> inside the wrapper.
             return wrapper.querySelector("input");
         }
         if (type === "slider") {
-            // Range slider <input type="range"> or the number buddy <input type="number">.
             return wrapper.querySelector("input[type='range']")
                 || wrapper.querySelector("input[type='number']");
         }
@@ -79,9 +69,6 @@
         return null;
     };
 
-    /**
-     * Read the current UI value for a preference key.
-     */
     const readValue = (key) => {
         const spec = PREFS[key];
         if (!spec) return undefined;
@@ -93,34 +80,7 @@
             const v = Number(el.value);
             return Number.isFinite(v) ? v : undefined;
         }
-        // dropdown / text
         return el.value || undefined;
-    };
-
-    /**
-     * Apply a saved value to a Gradio component by programmatically
-     * setting the input and dispatching `input` + `change` events so
-     * Gradio's Python backend picks up the new value.
-     */
-    const applyValue = (key, value) => {
-        const spec = PREFS[key];
-        if (!spec || value === undefined || value === null) return;
-        const el = findInput(spec.elemId, spec.type);
-        if (!el) return;
-
-        if (spec.type === "checkbox") {
-            if (el.checked === value) return;
-            el.checked = value;
-        } else {
-            if (String(el.value) === String(value)) return;
-            // For Gradio dropdowns we need to set nativeInputValueSetter
-            const nativeSetter = Object.getOwnPropertyDescriptor(
-                window.HTMLInputElement.prototype, "value"
-            ).set;
-            nativeSetter.call(el, String(value));
-        }
-        el.dispatchEvent(new Event("input", { bubbles: true }));
-        el.dispatchEvent(new Event("change", { bubbles: true }));
     };
 
     // ── Save (debounced) ─────────────────────────────────────────────
@@ -131,42 +91,40 @@
         }
         saveTimer = setTimeout(() => {
             saveTimer = null;
-            const prefs = {};
+            const prefs = { _version: SCHEMA_VERSION };
             for (const key of Object.keys(PREFS)) {
                 const v = readValue(key);
                 if (v !== undefined) {
                     prefs[key] = v;
                 }
             }
-            if (Object.keys(prefs).length > 0) {
-                saveAll(prefs);
-            }
+            saveAll(prefs);
         }, DEBOUNCE_MS);
     };
 
-    // ── Restore ──────────────────────────────────────────────────────
-
-    const restoreAll = () => {
-        const prefs = loadAll();
-        if (!prefs || Object.keys(prefs).length === 0) return;
-
-        for (const key of Object.keys(PREFS)) {
-            if (key in prefs) {
-                applyValue(key, prefs[key]);
-            }
-        }
-    };
-
-    // ── Wire up change listeners ─────────────────────────────────────
+    // ── Wire listeners (re-entrant – safe to call on re-renders) ─────
 
     const wireListeners = () => {
         for (const key of Object.keys(PREFS)) {
             const spec = PREFS[key];
             const el = findInput(spec.elemId, spec.type);
-            if (!el) continue;
+            if (!el || wiredElements.has(el)) continue;
+            wiredElements.add(el);
             el.addEventListener("input", scheduleSave, { passive: true });
             el.addEventListener("change", scheduleSave, { passive: true });
         }
+    };
+
+    // ── MutationObserver – re-wire after Gradio re-renders ───────────
+
+    const startObserver = () => {
+        const target = document.getElementById("acestep-audio-format")
+            || document.body;
+        const root = target.closest(".gradio-container") || document.body;
+
+        new MutationObserver(() => {
+            wireListeners();
+        }).observe(root, { childList: true, subtree: true });
     };
 
     // ── Boot ─────────────────────────────────────────────────────────
@@ -175,20 +133,19 @@
     const BOOT_TIMEOUT_MS = 10000;
 
     const boot = () => {
-        // Gradio renders components async – poll until elements appear.
         const started = Date.now();
         const poll = () => {
-            // Check if at least the audio_format dropdown exists.
-            const probe = document.getElementById(PREFS.audio_format.elemId);
+            const probe = document.getElementById(
+                PREFS.audio_format.elemId
+            );
             if (!probe) {
                 if (Date.now() - started < BOOT_TIMEOUT_MS) {
                     setTimeout(poll, BOOT_POLL_MS);
                 }
                 return;
             }
-            // Elements are ready – restore saved prefs, then wire listeners.
-            restoreAll();
             wireListeners();
+            startObserver();
         };
         poll();
     };
