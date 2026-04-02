@@ -85,17 +85,38 @@ def _build_restore_js() -> str:
         ensure_ascii=False,
     )
     keys_json = json.dumps(PREF_KEYS)
+    # Keys whose Gradio Dropdown choices are integers, not strings.
+    # localStorage always stores strings, so the restore JS must coerce
+    # these back to numbers for Gradio's value matching to work.
+    numeric_dropdown_keys_json = json.dumps(
+        [k for k, v in _DEFAULTS.items() if isinstance(v, (int, float)) and k in PREF_KEYS],
+    )
     return f"""() => {{
         const STORAGE_KEY = {json.dumps(_STORAGE_KEY)};
         const SCHEMA_VERSION = {_SCHEMA_VERSION};
         const DEFAULTS = {defaults_json};
         const KEYS = {keys_json};
+        const NUMERIC_DROPDOWN_KEYS = new Set({numeric_dropdown_keys_json});
         try {{
             const raw = window.localStorage.getItem(STORAGE_KEY);
             if (!raw) return KEYS.map(k => DEFAULTS[k]);
             const prefs = JSON.parse(raw);
-            if (prefs._version !== SCHEMA_VERSION) return KEYS.map(k => DEFAULTS[k]);
-            return KEYS.map(k => (k in prefs) ? prefs[k] : DEFAULTS[k]);
+            // Only reset on downgrade; forward-compatible additions of new
+            // keys are handled by per-key defaulting below.
+            if (typeof prefs._version === "number" && prefs._version > SCHEMA_VERSION) {{
+                return KEYS.map(k => DEFAULTS[k]);
+            }}
+            return KEYS.map(k => {{
+                if (!(k in prefs)) return DEFAULTS[k];
+                let v = prefs[k];
+                // Coerce stringified numbers back for Dropdown choices that
+                // expect integers (e.g. mp3_sample_rate: 48000 not "48000").
+                if (NUMERIC_DROPDOWN_KEYS.has(k) && typeof v === "string") {{
+                    const n = Number(v);
+                    if (Number.isFinite(n)) v = n;
+                }}
+                return v;
+            }});
         }} catch (_e) {{
             return KEYS.map(k => DEFAULTS[k]);
         }}

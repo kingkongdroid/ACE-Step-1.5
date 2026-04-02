@@ -111,10 +111,19 @@ class RestoreTests(unittest.TestCase):
             self.assertIn(json.dumps(default), js,
                           f"Missing default for {key}={default!r}")
 
-    def test_restore_js_rejects_wrong_schema_version(self):
+    def test_restore_js_only_resets_on_downgrade(self):
+        """Version check should only discard prefs from future (higher) versions."""
         js = _build_restore_js()
         self.assertIn("_version", js)
-        self.assertIn("DEFAULTS", js)
+        self.assertIn("prefs._version > SCHEMA_VERSION", js)
+        self.assertNotIn("prefs._version !== SCHEMA_VERSION", js)
+
+    def test_restore_js_coerces_numeric_dropdown_values(self):
+        """Dropdown values stored as strings in localStorage must be coerced
+        back to numbers when the Gradio component expects integers."""
+        js = _build_restore_js()
+        self.assertIn("NUMERIC_DROPDOWN_KEYS", js)
+        self.assertIn("Number(v)", js)
 
     def test_restore_preferences_is_identity(self):
         """The Python fn is a pass-through; values come from the JS side."""
