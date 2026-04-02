@@ -14,8 +14,13 @@
     <img src="./assets/organization_logos.png" width="100%" alt="StepFun Logo">
 </p>
 
+## 📰 News
+
+- **[2026-04-02] 🎉 ACE-Step 1.5 XL (4B DiT) Released!** — We introduce the XL series with a 4B-parameter DiT decoder for higher audio quality. Three variants available: [xl-base](https://huggingface.co/ACE-Step/acestep-v15-xl-base), [xl-sft](https://huggingface.co/ACE-Step/acestep-v15-xl-sft), [xl-turbo](https://huggingface.co/ACE-Step/acestep-v15-xl-turbo). Requires ≥12GB VRAM (with offload), ≥20GB recommended. All LM models fully compatible. See [Model Zoo](#-model-zoo) for details.
+
 ## Table of Contents
 
+- [📰 News](#-news)
 - [✨ Features](#-features)
 - [⚡ Quick Start](#-quick-start)
 - [🚀 Launch Scripts](#-launch-scripts)
