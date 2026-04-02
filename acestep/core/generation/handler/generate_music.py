@@ -137,7 +137,10 @@ class GenerateMusicMixin:
 
         duration_s = audio_duration or 60.0
         # Determine actual model size (XL vs standard) and CFG mode.
-        dit_type = get_dit_type_from_path(getattr(self, "config_path", ""))
+        config_path = ""
+        if getattr(self, "last_init_params", None):
+            config_path = self.last_init_params.get("config_path", "")
+        dit_type = get_dit_type_from_path(config_path)
         is_xl = dit_type.startswith("xl_")
         # CFG doubles forward-pass memory: two DiT evaluations per step.
         if guidance_scale > 1.0:
