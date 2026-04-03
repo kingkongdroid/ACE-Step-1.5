@@ -604,14 +604,15 @@ def generate_music(
             logger.info(f"[generate_music] Final inputs: dit_input_caption='{dit_input_caption}', dit_input_lyrics='{dit_input_lyrics}'")
 
         # For source-audio tasks (cover/repaint/lego/extract), the output
-        # duration must match the source audio — ignore any caller-supplied
-        # or LM-generated audio_duration so the handler derives it from
-        # processed_src_audio instead.
+        # duration must match the source audio.  Discard any stale value
+        # carried over from the UI (e.g. user set duration in Custom mode,
+        # then switched to Cover/Repaint without resetting the component)
+        # so the handler derives duration from processed_src_audio instead.
         _src_audio_tasks = {"cover", "repaint", "lego", "extract"}
         if params.task_type in _src_audio_tasks:
             if audio_duration is not None and audio_duration > 0:
                 logger.info(
-                    "[generate_music] {} task: discarding caller-supplied "
+                    "[generate_music] {} task: discarding stale "
                     "audio_duration={:.1f}; handler will use src_audio length",
                     params.task_type, float(audio_duration),
                 )
