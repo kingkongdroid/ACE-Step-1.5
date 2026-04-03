@@ -603,33 +603,11 @@ def generate_music(
             logger.info(f"[generate_music] {params.task_type} task: using params.caption='{params.caption}', params.lyrics='{params.lyrics}'")
             logger.info(f"[generate_music] Final inputs: dit_input_caption='{dit_input_caption}', dit_input_lyrics='{dit_input_lyrics}'")
 
-        # For source-audio tasks (cover/repaint/lego/extract), the output
-        # duration is locked to the source audio length.  Any user-supplied,
-        # UI-carried, or LM-generated value is ignored — the handler reads
-        # the actual src_audio waveform and overwrites audio_duration after
-        # loading processed_src_audio (see GenerateMusicMixin.generate_music).
-        _src_audio_tasks = {"cover", "repaint", "lego", "extract"}
-        if params.task_type in _src_audio_tasks and params.src_audio:
-            try:
-                from acestep.training.dataset_builder_modules.audio_io import (
-                    get_audio_duration as _get_src_duration,
-                )
-                src_dur = float(_get_src_duration(params.src_audio))
-                if src_dur > 0:
-                    if audio_duration is not None and audio_duration > 0 and audio_duration != src_dur:
-                        logger.info(
-                            "[generate_music] {} task: overriding "
-                            "audio_duration={:.1f} → src_audio duration={:.1f}",
-                            params.task_type, float(audio_duration), src_dur,
-                        )
-                    audio_duration = src_dur
-            except Exception as e:
-                logger.warning(
-                    "[generate_music] Could not read src_audio duration "
-                    "({}); handler will derive from waveform",
-                    e,
-                )
-                audio_duration = None
+        # Cover/repaint/lego/extract: duration is locked to the source audio
+        # length.  Silently ignore whatever the caller passed — the handler
+        # will set audio_duration from the loaded waveform.
+        if params.task_type in ("cover", "repaint", "lego", "extract"):
+            audio_duration = None
 
         # Phase 2: DiT music generation
         # Use seed_for_generation (from config.seed or params.seed) instead of params.seed for actual generation
