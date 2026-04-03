@@ -85,18 +85,28 @@ def _build_restore_js() -> str:
         ensure_ascii=False,
     )
     keys_json = json.dumps(PREF_KEYS)
-    # Keys whose Gradio Dropdown choices are integers, not strings.
-    # localStorage always stores strings, so the restore JS must coerce
-    # these back to numbers for Gradio's value matching to work.
-    numeric_dropdown_keys_json = json.dumps(
-        [k for k, v in _DEFAULTS.items() if isinstance(v, (int, float)) and k in PREF_KEYS],
-    )
+    # Build a type map so the restore JS can validate each value.
+    type_map: dict[str, str] = {}
+    for k in PREF_KEYS:
+        v = _DEFAULTS[k]
+        if isinstance(v, bool):
+            type_map[k] = "boolean"
+        elif isinstance(v, (int, float)):
+            type_map[k] = "number"
+        else:
+            type_map[k] = "string"
+    type_map_json = json.dumps(type_map, ensure_ascii=False)
+    # Keys whose Gradio Dropdown choices are integers stored as strings in
+    # localStorage.  Only actual dropdown keys with numeric defaults need
+    # coercion; sliders/numbers are already stored as numbers.
+    numeric_dropdown_keys_json = json.dumps(["mp3_sample_rate"])
     return f"""() => {{
         const STORAGE_KEY = {json.dumps(_STORAGE_KEY)};
         const SCHEMA_VERSION = {_SCHEMA_VERSION};
         const DEFAULTS = {defaults_json};
         const KEYS = {keys_json};
-        const NUMERIC_DROPDOWN_KEYS = new Set({numeric_dropdown_keys_json});
+        const TYPE_MAP = {type_map_json};
+        const NUMERIC_COERCE_KEYS = new Set({numeric_dropdown_keys_json});
         try {{
             const raw = window.localStorage.getItem(STORAGE_KEY);
             if (!raw) return KEYS.map(k => DEFAULTS[k]);
@@ -109,11 +119,21 @@ def _build_restore_js() -> str:
             return KEYS.map(k => {{
                 if (!(k in prefs)) return DEFAULTS[k];
                 let v = prefs[k];
+                // Type-check: fall back to default if the stored type does
+                // not match what the Gradio component expects.
+                const expected = TYPE_MAP[k];
+                if (expected && typeof v !== expected) {{
+                    // Allow stringified numbers for dropdown coercion below.
+                    if (!(NUMERIC_COERCE_KEYS.has(k) && typeof v === "string")) {{
+                        return DEFAULTS[k];
+                    }}
+                }}
                 // Coerce stringified numbers back for Dropdown choices that
                 // expect integers (e.g. mp3_sample_rate: 48000 not "48000").
-                if (NUMERIC_DROPDOWN_KEYS.has(k) && typeof v === "string") {{
+                if (NUMERIC_COERCE_KEYS.has(k) && typeof v === "string") {{
                     const n = Number(v);
                     if (Number.isFinite(n)) v = n;
+                    else return DEFAULTS[k];
                 }}
                 return v;
             }});

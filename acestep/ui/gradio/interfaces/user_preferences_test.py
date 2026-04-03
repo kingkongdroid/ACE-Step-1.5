@@ -122,8 +122,14 @@ class RestoreTests(unittest.TestCase):
         """Dropdown values stored as strings in localStorage must be coerced
         back to numbers when the Gradio component expects integers."""
         js = _build_restore_js()
-        self.assertIn("NUMERIC_DROPDOWN_KEYS", js)
+        self.assertIn("NUMERIC_COERCE_KEYS", js)
         self.assertIn("Number(v)", js)
+
+    def test_restore_js_validates_value_types(self):
+        """Restore JS must include per-key type validation."""
+        js = _build_restore_js()
+        self.assertIn("TYPE_MAP", js)
+        self.assertIn("typeof v !== expected", js)
 
     def test_restore_preferences_is_identity(self):
         """The Python fn is a pass-through; values come from the JS side."""

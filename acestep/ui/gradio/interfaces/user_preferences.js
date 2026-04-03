@@ -122,8 +122,14 @@
             || document.body;
         const root = target.closest(".gradio-container") || document.body;
 
+        let rafPending = false;
         new MutationObserver(() => {
-            wireListeners();
+            if (rafPending) return;
+            rafPending = true;
+            requestAnimationFrame(() => {
+                rafPending = false;
+                wireListeners();
+            });
         }).observe(root, { childList: true, subtree: true });
     };
 
