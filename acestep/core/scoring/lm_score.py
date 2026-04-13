@@ -9,6 +9,7 @@ import contextlib
 import gc
 import math
 import re
+import threading
 
 import torch
 import torch.nn.functional as F
@@ -68,19 +69,64 @@ def pmi_to_normalized_score(pmi: float, scale: float = 0.1) -> float:
     return 1.0 / (1.0 + math.exp(-pmi / scale))
 
 
-def _empty_accelerator_cache() -> None:
-    """Release cached GPU/MPS memory on the active accelerator."""
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-    elif hasattr(torch, "xpu") and torch.xpu.is_available():
-        torch.xpu.empty_cache()
-    elif (
-        hasattr(torch.backends, "mps")
-        and torch.backends.mps.is_available()
-        and hasattr(torch, "mps")
-        and hasattr(torch.mps, "empty_cache")
-    ):
-        torch.mps.empty_cache()
+def _empty_accelerator_cache(backend: str) -> None:
+    """Release cached accelerator memory scoped to the scoring backend.
+
+    Keeps cache eviction confined to the runtime actually used by the
+    scoring pass so non-target runtimes (e.g. CUDA when running MLX) are
+    not forced through an allocator reset.  ``mlx`` -> MPS, ``vllm`` ->
+    CUDA / XPU, ``pt`` -> delegated to ``_load_model_context`` and never
+    reaches this helper.
+    """
+    if backend == "mlx":
+        if (
+            hasattr(torch.backends, "mps")
+            and torch.backends.mps.is_available()
+            and hasattr(torch, "mps")
+            and hasattr(torch.mps, "empty_cache")
+        ):
+            torch.mps.empty_cache()
+        return
+
+    if backend == "vllm":
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        elif hasattr(torch, "xpu") and torch.xpu.is_available():
+            torch.xpu.empty_cache()
+
+
+# Per-thread reentrancy depth state for _load_scoring_model_context.  Keeping
+# this on ``threading.local`` (rather than on the handler) prevents concurrent
+# Autoscore calls on the same handler from seeing each other's depth counter
+# and clearing the cached scoring model out from under a peer thread.  The
+# scoring forward path is strictly synchronous (``torch.no_grad`` + a plain
+# ``model(...)`` call) so thread-local storage is sufficient; there are no
+# async suspension points where a contextvar would be strictly required.
+_scoring_tls = threading.local()
+
+# Guards lazy creation of the per-handler RLock so two threads racing on the
+# first scoring call don't each install a different lock object.
+_scoring_lock_creation_lock = threading.Lock()
+
+
+def _get_scoring_handler_lock(llm_handler) -> threading.RLock:
+    """Return (and lazily create) a per-handler reentrant lock."""
+    lock = getattr(llm_handler, "_scoring_lock", None)
+    if lock is None:
+        with _scoring_lock_creation_lock:
+            lock = getattr(llm_handler, "_scoring_lock", None)
+            if lock is None:
+                lock = threading.RLock()
+                llm_handler._scoring_lock = lock
+    return lock
+
+
+def _scoring_depth_map() -> Dict[int, int]:
+    depths = getattr(_scoring_tls, "depths", None)
+    if depths is None:
+        depths = {}
+        _scoring_tls.depths = depths
+    return depths
 
 
 @contextlib.contextmanager
@@ -96,15 +142,22 @@ def _load_scoring_model_context(llm_handler):
     only for the duration of the scoring forward pass and move it back to
     CPU when done, freeing VRAM for DiT / VAE.
 
-    The context is **reentrant**: nested entries are no-ops.  A single
-    Autoscore pass performs many forward passes per sample (per-metadata
-    recall, caption PMI, lyrics PMI -- each with a conditional and an
-    unconditional prompt).  Without reentrancy, every one of those forward
-    passes would migrate a multi-GB model CPU↔accelerator, which on Apple
-    Silicon unified memory (MLX) accumulates fragmented MPS allocations
-    until the system runs out of memory (issue #1081).  By hoisting a
-    single outer context around the whole scoring pass we reduce that to
-    exactly one migration per sample.
+    The context is **reentrant per thread and serialised across threads**.
+    A single Autoscore pass performs many forward passes per sample
+    (per-metadata recall, caption PMI, lyrics PMI -- each with a
+    conditional and an unconditional prompt).  Without reentrancy every
+    one of those forward passes would migrate a multi-GB model
+    CPU↔accelerator, which on Apple Silicon unified memory (MLX)
+    accumulates fragmented MPS allocations until the system runs out of
+    memory (issue #1081).  By hoisting a single outer context around the
+    whole scoring pass we reduce that to exactly one migration per sample.
+
+    Reentrancy state is kept in thread-local storage keyed by handler id so
+    two concurrent Autoscore calls on the same handler do not see each
+    other's depth counter.  The outermost entry from each thread acquires
+    a handler-level ``RLock`` so concurrent calls serialise the shared
+    load/offload transition (and, on MLX, the cached-model drop) instead
+    of racing on ``_hf_model_for_scoring``.
 
     On MLX with ``offload_to_cpu`` enabled we additionally drop the cached
     HF scoring model on outermost exit so the ~8 GB duplicate PyTorch copy
@@ -122,58 +175,71 @@ def _load_scoring_model_context(llm_handler):
             yield
         return
 
-    # vllm / mlx: manage the cached HF model ourselves.  Use a reentrancy
-    # depth counter stored on the handler so that nested entries become
-    # no-ops.  Only the outermost entry moves the model to the accelerator
-    # and only the outermost exit moves it back (and, for MLX, drops it).
-    depth = getattr(llm_handler, "_scoring_ctx_depth", 0)
+    # vllm / mlx: manage the cached HF model ourselves.  Use a per-thread
+    # reentrancy depth counter so nested entries from the same thread
+    # become no-ops.  Only the outermost entry from each thread moves the
+    # model to the accelerator and only the outermost exit moves it back
+    # (and, for MLX, drops it).
+    depths = _scoring_depth_map()
+    key = id(llm_handler)
+    depth = depths.get(key, 0)
+
     if depth > 0:
-        llm_handler._scoring_ctx_depth = depth + 1
+        depths[key] = depth + 1
         try:
             yield
         finally:
-            llm_handler._scoring_ctx_depth -= 1
+            depths[key] -= 1
+            if depths[key] <= 0:
+                depths.pop(key, None)
         return
 
-    model = llm_handler.get_hf_model_for_scoring()
-    if model is None:
-        yield
-        return
+    # Outermost entry for this thread: serialise with other threads on the
+    # same handler so the shared ``_hf_model_for_scoring`` load/offload
+    # transition is atomic.  The RLock is safe to re-acquire from the same
+    # thread on the (unlikely) event that a nested path ends up here.
+    lock = _get_scoring_handler_lock(llm_handler)
+    with lock:
+        model = llm_handler.get_hf_model_for_scoring()
+        if model is None:
+            yield
+            return
 
-    offload = getattr(llm_handler, "offload_to_cpu", False)
-    device = llm_handler.device if hasattr(llm_handler, "device") else "cpu"
+        offload = getattr(llm_handler, "offload_to_cpu", False)
+        device = llm_handler.device if hasattr(llm_handler, "device") else "cpu"
 
-    if offload and hasattr(model, "to"):
-        logger.info(f"[scoring] Loading HF scoring model to {device}")
-        model.to(device)
-
-    llm_handler._scoring_ctx_depth = 1
-    try:
-        yield
-    finally:
-        llm_handler._scoring_ctx_depth = 0
         if offload and hasattr(model, "to"):
-            logger.info("[scoring] Offloading HF scoring model to CPU")
-            model.to("cpu")
-            _empty_accelerator_cache()
+            logger.info(f"[scoring] Loading HF scoring model to {device}")
+            model.to(device)
 
-        # On MLX with offload enabled, the HF scoring model is a *separate*
-        # ~8 GB PyTorch copy of the LM (the MLX model itself cannot be used
-        # for torch teacher-forcing scoring).  Keeping it resident on CPU
-        # between scoring passes doubles the LM footprint in unified memory
-        # and -- combined with repeated .to("mps") / .to("cpu") migrations --
-        # pushes 32 GB Macs past their limit (issue #1081).  Drop the cached
-        # copy so unified memory is returned to the OS; it will be re-loaded
-        # from the HF cache on the next scoring call.
-        if backend == "mlx" and offload:
-            llm_handler._hf_model_for_scoring = None
-            del model
-            gc.collect()
-            _empty_accelerator_cache()
-            logger.info(
-                "[scoring] Released cached HF scoring model on MLX backend "
-                "(will be reloaded on next Autoscore call)"
-            )
+        depths[key] = 1
+        try:
+            yield
+        finally:
+            depths.pop(key, None)
+            if offload and hasattr(model, "to"):
+                logger.info("[scoring] Offloading HF scoring model to CPU")
+                model.to("cpu")
+                _empty_accelerator_cache(backend)
+
+            # On MLX with offload enabled, the HF scoring model is a
+            # *separate* ~8 GB PyTorch copy of the LM (the MLX model itself
+            # cannot be used for torch teacher-forcing scoring).  Keeping
+            # it resident on CPU between scoring passes doubles the LM
+            # footprint in unified memory and -- combined with repeated
+            # .to("mps") / .to("cpu") migrations -- pushes 32 GB Macs past
+            # their limit (issue #1081).  Drop the cached copy so unified
+            # memory is returned to the OS; it will be re-loaded from the
+            # HF cache on the next scoring call.
+            if backend == "mlx" and offload:
+                llm_handler._hf_model_for_scoring = None
+                del model
+                gc.collect()
+                _empty_accelerator_cache("mlx")
+                logger.info(
+                    "[scoring] Released cached HF scoring model on MLX "
+                    "backend (will be reloaded on next Autoscore call)"
+                )
 
 
 def _get_logits_and_target_for_scoring(llm_handler, formatted_prompt: str,
