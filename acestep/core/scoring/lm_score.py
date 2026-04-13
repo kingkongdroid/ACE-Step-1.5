@@ -6,6 +6,7 @@ language model.  Provides PMI, top-k recall, metadata recall, and a
 composite reward score.
 """
 import contextlib
+import gc
 import math
 import re
 
@@ -67,6 +68,21 @@ def pmi_to_normalized_score(pmi: float, scale: float = 0.1) -> float:
     return 1.0 / (1.0 + math.exp(-pmi / scale))
 
 
+def _empty_accelerator_cache() -> None:
+    """Release cached GPU/MPS memory on the active accelerator."""
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    elif hasattr(torch, "xpu") and torch.xpu.is_available():
+        torch.xpu.empty_cache()
+    elif (
+        hasattr(torch.backends, "mps")
+        and torch.backends.mps.is_available()
+        and hasattr(torch, "mps")
+        and hasattr(torch.mps, "empty_cache")
+    ):
+        torch.mps.empty_cache()
+
+
 @contextlib.contextmanager
 def _load_scoring_model_context(llm_handler):
     """
@@ -79,16 +95,46 @@ def _load_scoring_model_context(llm_handler):
     that would otherwise stay on GPU permanently -- here we move it to GPU
     only for the duration of the scoring forward pass and move it back to
     CPU when done, freeing VRAM for DiT / VAE.
+
+    The context is **reentrant**: nested entries are no-ops.  A single
+    Autoscore pass performs many forward passes per sample (per-metadata
+    recall, caption PMI, lyrics PMI -- each with a conditional and an
+    unconditional prompt).  Without reentrancy, every one of those forward
+    passes would migrate a multi-GB model CPU↔accelerator, which on Apple
+    Silicon unified memory (MLX) accumulates fragmented MPS allocations
+    until the system runs out of memory (issue #1081).  By hoisting a
+    single outer context around the whole scoring pass we reduce that to
+    exactly one migration per sample.
+
+    On MLX with ``offload_to_cpu`` enabled we additionally drop the cached
+    HF scoring model on outermost exit so the ~8 GB duplicate PyTorch copy
+    of the LM does not remain resident between generations.  The next
+    scoring call re-materialises it via ``AutoModelForCausalLM.from_pretrained``
+    -- weights are cached by the HF hub so this is a fast rematerialisation,
+    not a redownload.
     """
     backend = getattr(llm_handler, "llm_backend", "pt")
 
     if backend == "pt":
-        # pt backend: _load_model_context already handles GPU <-> CPU
+        # pt backend: _load_model_context already handles GPU <-> CPU and
+        # has its own device-based reentrancy guard (llm_inference.py).
         with llm_handler._load_model_context():
             yield
         return
 
-    # vllm / mlx: manage the cached HF model ourselves
+    # vllm / mlx: manage the cached HF model ourselves.  Use a reentrancy
+    # depth counter stored on the handler so that nested entries become
+    # no-ops.  Only the outermost entry moves the model to the accelerator
+    # and only the outermost exit moves it back (and, for MLX, drops it).
+    depth = getattr(llm_handler, "_scoring_ctx_depth", 0)
+    if depth > 0:
+        llm_handler._scoring_ctx_depth = depth + 1
+        try:
+            yield
+        finally:
+            llm_handler._scoring_ctx_depth -= 1
+        return
+
     model = llm_handler.get_hf_model_for_scoring()
     if model is None:
         yield
@@ -101,16 +147,33 @@ def _load_scoring_model_context(llm_handler):
         logger.info(f"[scoring] Loading HF scoring model to {device}")
         model.to(device)
 
+    llm_handler._scoring_ctx_depth = 1
     try:
         yield
     finally:
+        llm_handler._scoring_ctx_depth = 0
         if offload and hasattr(model, "to"):
             logger.info("[scoring] Offloading HF scoring model to CPU")
             model.to("cpu")
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-            elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available() and hasattr(torch, "mps") and hasattr(torch.mps, "empty_cache"):
-                torch.mps.empty_cache()
+            _empty_accelerator_cache()
+
+        # On MLX with offload enabled, the HF scoring model is a *separate*
+        # ~8 GB PyTorch copy of the LM (the MLX model itself cannot be used
+        # for torch teacher-forcing scoring).  Keeping it resident on CPU
+        # between scoring passes doubles the LM footprint in unified memory
+        # and -- combined with repeated .to("mps") / .to("cpu") migrations --
+        # pushes 32 GB Macs past their limit (issue #1081).  Drop the cached
+        # copy so unified memory is returned to the OS; it will be re-loaded
+        # from the HF cache on the next scoring call.
+        if backend == "mlx" and offload:
+            llm_handler._hf_model_for_scoring = None
+            del model
+            gc.collect()
+            _empty_accelerator_cache()
+            logger.info(
+                "[scoring] Released cached HF scoring model on MLX backend "
+                "(will be reloaded on next Autoscore call)"
+            )
 
 
 def _get_logits_and_target_for_scoring(llm_handler, formatted_prompt: str,
@@ -412,40 +475,47 @@ def calculate_pmi_score_per_condition(
     formatted_prompt = llm_handler.build_formatted_prompt_for_understanding(audio_codes=audio_codes, is_negative_prompt=False)
     prompt_uncond = llm_handler.build_formatted_prompt_for_understanding(audio_codes="NO USER INPUT", is_negative_prompt=False)
     try:
-        # 1. Calculate Recall for Metadata Fields
-        if metadata and isinstance(metadata, dict):
-            scores = {}
-            # Define which fields use which metric
-            metadata_recall_keys = ['bpm', 'duration', 'genres', 'keyscale', 'language', 'timesignature']
-            metadata_pmi_keys = ['caption']
-            for key in metadata_recall_keys:
-                if key in metadata and metadata[key] is not None:
-                    recall_metadata = {key: metadata[key]}
-                    field_scores = _calculate_metadata_recall(llm_handler, formatted_prompt, recall_metadata, topk=topk)
-                    scores.update(field_scores)
+        # Batch *all* scoring forward passes under a single load/offload
+        # cycle.  The inner ``_get_logits_and_target_for_scoring`` calls
+        # still enter ``_load_scoring_model_context``, but the reentrancy
+        # guard turns those nested entries into no-ops -- so the cached HF
+        # scoring model is moved CPU↔accelerator exactly once per Autoscore
+        # pass instead of once per condition (issue #1081).
+        with _load_scoring_model_context(llm_handler):
+            # 1. Calculate Recall for Metadata Fields
+            if metadata and isinstance(metadata, dict):
+                scores = {}
+                # Define which fields use which metric
+                metadata_recall_keys = ['bpm', 'duration', 'genres', 'keyscale', 'language', 'timesignature']
+                metadata_pmi_keys = ['caption']
+                for key in metadata_recall_keys:
+                    if key in metadata and metadata[key] is not None:
+                        recall_metadata = {key: metadata[key]}
+                        field_scores = _calculate_metadata_recall(llm_handler, formatted_prompt, recall_metadata, topk=topk)
+                        scores.update(field_scores)
 
-            # 2. Calculate PMI for Caption
-            for key in metadata_pmi_keys:
-                if key in metadata and metadata[key] is not None:
-                    cot_yaml = yaml.dump({key: metadata[key]}, allow_unicode=True, sort_keys=True).strip()
-                    target_text = f"<think>\n{cot_yaml}\n</think>\n"
+                # 2. Calculate PMI for Caption
+                for key in metadata_pmi_keys:
+                    if key in metadata and metadata[key] is not None:
+                        cot_yaml = yaml.dump({key: metadata[key]}, allow_unicode=True, sort_keys=True).strip()
+                        target_text = f"<think>\n{cot_yaml}\n</think>\n"
 
-                    log_prob_cond = _calculate_log_prob(llm_handler, formatted_prompt, target_text)
-                    log_prob_uncond = _calculate_log_prob(llm_handler, prompt_uncond, target_text)
+                        log_prob_cond = _calculate_log_prob(llm_handler, formatted_prompt, target_text)
+                        log_prob_uncond = _calculate_log_prob(llm_handler, prompt_uncond, target_text)
 
-                    pmi_normalized = pmi_to_normalized_score(log_prob_cond - log_prob_uncond, scale=score_scale)
-                    scores[key] = pmi_normalized
+                        pmi_normalized = pmi_to_normalized_score(log_prob_cond - log_prob_uncond, scale=score_scale)
+                        scores[key] = pmi_normalized
 
-        # 3. Calculate PMI for Lyrics
-        if lyrics:
-            target_text = f"<think>\n</think>\n# Lyric\n{lyrics}\n"
+            # 3. Calculate PMI for Lyrics
+            if lyrics:
+                target_text = f"<think>\n</think>\n# Lyric\n{lyrics}\n"
 
-            log_prob_cond = _calculate_log_prob(llm_handler, formatted_prompt, target_text)
+                log_prob_cond = _calculate_log_prob(llm_handler, formatted_prompt, target_text)
 
-            prompt_uncond = llm_handler.build_formatted_prompt_for_understanding(audio_codes="NO USER INPUT", is_negative_prompt=False)
-            log_prob_uncond = _calculate_log_prob(llm_handler, prompt_uncond, target_text)
+                prompt_uncond = llm_handler.build_formatted_prompt_for_understanding(audio_codes="NO USER INPUT", is_negative_prompt=False)
+                log_prob_uncond = _calculate_log_prob(llm_handler, prompt_uncond, target_text)
 
-            scores['lyrics'] = pmi_to_normalized_score(log_prob_cond - log_prob_uncond, scale=score_scale)
+                scores['lyrics'] = pmi_to_normalized_score(log_prob_cond - log_prob_uncond, scale=score_scale)
 
         if not scores:
             return {}, 0.0, "❌ No conditions to evaluate"
