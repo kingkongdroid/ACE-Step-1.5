@@ -11,7 +11,7 @@ from typing import List
 @dataclass
 class LoRAConfig:
     """Configuration for LoRA (Low-Rank Adaptation) training.
-    
+
     Attributes:
         r: LoRA rank (dimension of low-rank matrices)
         alpha: LoRA scaling factor (alpha/r determines the scaling)
@@ -26,7 +26,7 @@ class LoRAConfig:
         "q_proj", "k_proj", "v_proj", "o_proj"
     ])
     bias: str = "none"
-    
+
     def to_dict(self):
         """Convert to dictionary for PEFT config."""
         return {
@@ -78,13 +78,13 @@ class LoKRConfig:
 @dataclass
 class TrainingConfig:
     """Configuration for LoRA training process.
-    
+
     Training uses:
     - Device-aware mixed precision (bf16 on CUDA/XPU, fp16 on MPS, fp32 on CPU)
     - Discrete timesteps from turbo shift=3.0 schedule (8 steps)
     - Randomly samples one of 8 timesteps per training step:
       [1.0, 0.9545, 0.9, 0.8333, 0.75, 0.6429, 0.5, 0.3]
-    
+
     Attributes:
         shift: Timestep shift factor (fixed at 3.0 for turbo model)
         num_inference_steps: Number of inference steps (fixed at 8 for turbo)
@@ -116,14 +116,20 @@ class TrainingConfig:
     gradient_checkpointing: bool = False
     seed: int = 42
     output_dir: str = "./lora_output"
-    
+
+    # Training logic params (ACE-Step V2 / "Fixed" training)
+    cfg_ratio: float = 0.15
+    timestep_mu: float = -0.4
+    timestep_sigma: float = 1.0
+    data_proportion: float = 1.0  # Force r=t for training
+
     # Data loading
     num_workers: int = 4
     pin_memory: bool = True
     prefetch_factor: int = 2
     persistent_workers: bool = True
     pin_memory_device: str = ""
-    
+
     # Logging
     log_every_n_steps: int = 10
 
@@ -152,6 +158,10 @@ class TrainingConfig:
             "gradient_checkpointing": self.gradient_checkpointing,
             "seed": self.seed,
             "output_dir": self.output_dir,
+            "cfg_ratio": self.cfg_ratio,
+            "timestep_mu": self.timestep_mu,
+            "timestep_sigma": self.timestep_sigma,
+            "data_proportion": self.data_proportion,
             "num_workers": self.num_workers,
             "pin_memory": self.pin_memory,
             "prefetch_factor": self.prefetch_factor,

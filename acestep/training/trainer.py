@@ -331,6 +331,62 @@ def _configure_training_memory_features(decoder: nn.Module) -> Tuple[bool, bool,
     return checkpointing_enabled, cache_disabled, input_grads_enabled
 
 
+class _LastLossAccessor:
+    """Lightweight wrapper that provides [-1] and bool access.
+
+    Avoids storing an unbounded list of floats while keeping backward
+    compatibility with code that reads module.training_losses[-1]
+    or checks if module.training_losses:.
+    """
+
+    def __init__(self, container: "Union[PreprocessedLoRAModule, PreprocessedLoKRModule]") -> None:
+        self._container = container
+        self._has_value = False
+
+    def append(self, value: float) -> None:
+        self._container.last_training_loss = value
+        self._has_value = True
+
+    def __getitem__(self, idx: int) -> float:
+        if idx == -1 or idx == 0:
+            return getattr(self._container, "last_training_loss", 0.0)
+        raise IndexError("only index -1 or 0 is supported")
+
+    def __bool__(self) -> bool:
+        return self._has_value
+
+    def __len__(self) -> int:
+        return 1 if self._has_value else 0
+
+
+def sample_continuous_timesteps(
+    batch_size: int,
+    device: torch.device,
+    dtype: torch.dtype,
+    timestep_mu: float = -0.4,
+    timestep_sigma: float = 1.0,
+    data_proportion: float = 1.0,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Sample continuous timestep t and r for flow matching.
+
+    Faithful reimplementation of the sampling used in ACE-Step V2.
+    """
+    t = torch.sigmoid(
+        torch.randn((batch_size,), device=device, dtype=dtype) * timestep_sigma + timestep_mu
+    )
+    r = torch.sigmoid(
+        torch.randn((batch_size,), device=device, dtype=dtype) * timestep_sigma + timestep_mu
+    )
+    t, r = torch.maximum(t, r), torch.minimum(t, r)
+
+    # In ACE-Step training, data_proportion is typically 1.0 which makes r=t
+    data_size = int(batch_size * data_proportion)
+    zero_mask = torch.arange(batch_size, device=device) < data_size
+    r = torch.where(zero_mask, t, r)
+
+    return t, r
+
+
 def sample_discrete_timestep(bsz, timesteps_tensor):
     """Sample timesteps from discrete turbo shift=3 schedule.
 
@@ -406,11 +462,14 @@ class PreprocessedLoRAModule(nn.Module):
         # Inject LoRA into the decoder only
         if check_peft_available():
             # Fix: Force tensors out of inference mode before injection
+            # Inference mode tensors (from loading with torch.no_grad()) do not allow storage access
+            # which PEFT/LyCORIS injection needs to create views.
             for param in model.parameters():
-                param.data = param.data.clone()
                 if param.is_inference():
                     with torch.no_grad():
                         param.data = param.data.clone()
+                else:
+                    param.data = param.data.clone()
 
             self.model, self.lora_info = inject_lora_into_dit(model, lora_config)
             logger.info(
@@ -449,8 +508,16 @@ class PreprocessedLoRAModule(nn.Module):
         # Model config for flow matching
         self.config = model.config
 
-        # Store training losses
-        self.training_losses = []
+        # Null condition embedding for CFG dropout
+        if hasattr(model, "null_condition_emb"):
+            self._null_cond_emb = model.null_condition_emb
+        else:
+            self._null_cond_emb = None
+            logger.warning("model.null_condition_emb not found -- CFG dropout disabled")
+
+        # Book-keeping -- store only the most recent loss
+        self.last_training_loss = 0.0
+        self.training_losses = _LastLossAccessor(self)
 
     def training_step(
         self,
@@ -500,24 +567,43 @@ class PreprocessedLoRAModule(nn.Module):
 
             bsz = target_latents.shape[0]
 
+            # CFG Dropout (if null embedding available)
+            if self._null_cond_emb is not None:
+                cfg_ratio = self.training_config.cfg_ratio
+                cfg_mask = (
+                    torch.rand((bsz,), device=self.device, dtype=self.dtype) < cfg_ratio
+                ).view(-1, 1, 1)
+                encoder_hidden_states = torch.where(
+                    cfg_mask,
+                    self._null_cond_emb.expand_as(encoder_hidden_states),
+                    encoder_hidden_states,
+                )
+
             # Flow matching: sample noise x1 and interpolate with data x0
             x1 = torch.randn_like(target_latents)  # Noise
             x0 = target_latents  # Data
 
-            # Sample timesteps from discrete turbo shift=3 schedule (8 steps)
-            t, _ = sample_discrete_timestep(bsz, self.timesteps_tensor)
-            t_ = t.unsqueeze(-1).unsqueeze(-1)
+            # Sample continuous timesteps (logit-normal)
+            t, tr = sample_continuous_timesteps(
+                bsz,
+                self.device,
+                self.dtype,
+                timestep_mu=self.training_config.timestep_mu,
+                timestep_sigma=self.training_config.timestep_sigma,
+                data_proportion=self.training_config.data_proportion,
+            )
+            t_ = t.view(-1, 1, 1)
 
             # Interpolate: x_t = t * x1 + (1 - t) * x0
             xt = t_ * x1 + (1.0 - t_) * x0
             if self.force_input_grads_for_checkpointing:
                 xt = xt.requires_grad_(True)
 
-            # Forward through decoder (distilled turbo model, no CFG)
+            # Forward through decoder (distilled turbo model)
             decoder_outputs = self.model.decoder(
                 hidden_states=xt,
                 timestep=t,
-                timestep_r=t,
+                timestep_r=tr,
                 attention_mask=attention_mask,
                 encoder_hidden_states=encoder_hidden_states,
                 encoder_attention_mask=encoder_attention_mask,
@@ -1346,6 +1432,16 @@ class PreprocessedLoKRModule(nn.Module):
         self.lycoris_net = None
 
         if check_lycoris_available():
+            # Fix: Force tensors out of inference mode before injection
+            # Inference mode tensors (from loading with torch.no_grad()) do not allow storage access
+            # which LyCORIS injection needs to create views.
+            for param in model.parameters():
+                if param.is_inference():
+                    with torch.no_grad():
+                        param.data = param.data.clone()
+                else:
+                    param.data = param.data.clone()
+
             self.model, self.lycoris_net, self.lokr_info = inject_lokr_into_dit(
                 model, lokr_config
             )
@@ -1358,7 +1454,17 @@ class PreprocessedLoKRModule(nn.Module):
             logger.warning("LyCORIS not available, training without LoKr adapters")
 
         self.config = model.config
-        self.training_losses = []
+
+        # Null condition embedding for CFG dropout
+        if hasattr(model, "null_condition_emb"):
+            self._null_cond_emb = model.null_condition_emb
+        else:
+            self._null_cond_emb = None
+            logger.warning("model.null_condition_emb not found -- CFG dropout disabled")
+
+        # Book-keeping -- store only the most recent loss
+        self.last_training_loss = 0.0
+        self.training_losses = _LastLossAccessor(self)
 
     def training_step(self, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
         """Single LoKr training step."""
@@ -1387,11 +1493,36 @@ class PreprocessedLoKRModule(nn.Module):
             )
 
             bsz = target_latents.shape[0]
+
+            # CFG Dropout (if null embedding available)
+            if self._null_cond_emb is not None:
+                cfg_ratio = self.training_config.cfg_ratio
+                cfg_mask = (
+                    torch.rand((bsz,), device=self.device, dtype=self.dtype) < cfg_ratio
+                ).view(-1, 1, 1)
+                encoder_hidden_states = torch.where(
+                    cfg_mask,
+                    self._null_cond_emb.expand_as(encoder_hidden_states),
+                    encoder_hidden_states,
+                )
+
             x1 = torch.randn_like(target_latents)
             x0 = target_latents
 
-            t, _ = sample_discrete_timestep(bsz, self.timesteps_tensor)
-            t_ = t.unsqueeze(-1).unsqueeze(-1)
+            # Support both discrete and continuous timesteps
+            if getattr(self.training_config, "use_discrete_timesteps", False):
+                t, tr = sample_discrete_timestep(bsz, self.timesteps_tensor)
+            else:
+                # Sample continuous timesteps (logit-normal)
+                t, tr = sample_continuous_timesteps(
+                    bsz,
+                    self.device,
+                    self.dtype,
+                    timestep_mu=self.training_config.timestep_mu,
+                    timestep_sigma=self.training_config.timestep_sigma,
+                    data_proportion=self.training_config.data_proportion,
+                )
+            t_ = t.view(-1, 1, 1)
             xt = t_ * x1 + (1.0 - t_) * x0
             if self.force_input_grads_for_checkpointing:
                 xt = xt.requires_grad_(True)
@@ -1399,7 +1530,7 @@ class PreprocessedLoKRModule(nn.Module):
             decoder_outputs = self.model.decoder(
                 hidden_states=xt,
                 timestep=t,
-                timestep_r=t,
+                timestep_r=tr,
                 attention_mask=attention_mask,
                 encoder_hidden_states=encoder_hidden_states,
                 encoder_attention_mask=encoder_attention_mask,

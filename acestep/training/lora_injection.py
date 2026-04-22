@@ -213,10 +213,6 @@ def inject_lora_into_dit(
     peft_decoder = get_peft_model(decoder, peft_lora_config)
     model.decoder = peft_decoder
 
-    for name, param in model.named_parameters():
-        if "lora_" not in name:
-            param.requires_grad = False
-
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
 
